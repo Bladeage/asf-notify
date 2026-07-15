@@ -16,6 +16,7 @@ using ArchiSteamFarm.Steam.Integration.Callbacks;
 using ASFNotify.Configuration;
 using ASFNotify.Data;
 using ASFNotify.Notifiers;
+using ASFNotify.Steam;
 using JetBrains.Annotations;
 using SteamKit2;
 
@@ -23,7 +24,7 @@ namespace ASFNotify;
 
 #pragma warning disable CA1812 // ASF instantiates this class via reflection
 [UsedImplicitly]
-internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInfo, IBotModules, IBotCommand2, IBotTradeOffer2, IBotTradeOfferResults, IBotUserNotifications, IUpdateAware, IGitHubPluginUpdates {
+internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInfo, IBotModules, IBotCommand2, IBotSteamClient, IBotTradeOffer2, IBotTradeOfferResults, IBotUserNotifications, IUpdateAware, IGitHubPluginUpdates {
 	private const string ConfigKey = nameof(ASFNotify);
 	private const string ServerLabel = "ASF";
 	private const int StartupGraceSeconds = 60;
@@ -47,6 +48,9 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 	];
 
 	private readonly ConcurrentDictionary<string, PluginConfig> BotConfigs = new(StringComparer.OrdinalIgnoreCase);
+
+	// Per-bot set of owned package IDs, to detect newly added licenses (GameRedeemed).
+	private readonly ConcurrentDictionary<string, ImmutableHashSet<uint>> KnownPackages = new(StringComparer.OrdinalIgnoreCase);
 
 	// Used to ignore the OnBotInit burst that fires for every existing bot at startup.
 	private readonly DateTime StartupUtc = DateTime.UtcNow;
@@ -105,6 +109,7 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 		}
 
 		BotConfigs.TryRemove(bot.BotName, out _);
+		KnownPackages.TryRemove(bot.BotName, out _);
 
 		return Task.CompletedTask;
 	}
@@ -212,14 +217,70 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 		ArgumentNullException.ThrowIfNull(newNotifications);
 
 		if (newNotifications.Contains(UserNotificationsCallback.EUserNotification.Gifts)) {
-			Report(bot, EEventType.GiftReceived, ENotificationPriority.Normal, $"Bot {bot.BotName} received a Steam gift — check the account to claim it.");
+			Report(bot, EEventType.GiftReceived, ENotificationPriority.Normal, $"Bot {bot.BotName} received a Steam gift.");
 		}
 
 		if (newNotifications.Contains(UserNotificationsCallback.EUserNotification.AccountAlerts)) {
-			Report(bot, EEventType.AccountAlert, ENotificationPriority.High, $"Steam raised an account alert for bot {bot.BotName}. Check the account.");
+			Report(bot, EEventType.AccountAlert, ENotificationPriority.High, $"Steam raised an account alert for bot {bot.BotName}.");
 		}
 
 		return Task.CompletedTask;
+	}
+
+	public Task<IReadOnlyCollection<ClientMsgHandler>?> OnBotSteamHandlersInit(Bot bot) => Task.FromResult<IReadOnlyCollection<ClientMsgHandler>?>(null);
+
+	public Task OnBotSteamCallbacksInit(Bot bot, CallbackManager callbackManager) {
+		ArgumentNullException.ThrowIfNull(bot);
+		ArgumentNullException.ThrowIfNull(callbackManager);
+
+		callbackManager.Subscribe<SteamApps.LicenseListCallback>(callback => OnLicenseList(bot, callback));
+
+		return Task.CompletedTask;
+	}
+
+	private void OnLicenseList(Bot bot, SteamApps.LicenseListCallback callback) {
+		if (callback.LicenseList == null) {
+			return;
+		}
+
+		Dictionary<uint, EPaymentMethod> current = new();
+
+		foreach (SteamApps.LicenseListCallback.License license in callback.LicenseList) {
+			if (license.LicenseFlags.HasFlag(ELicenseFlags.Borrowed)) {
+				continue;
+			}
+
+			current[license.PackageID] = license.PaymentMethod;
+		}
+
+		// The first callback (initial license list at login) just sets the baseline.
+		if (!KnownPackages.TryGetValue(bot.BotName, out ImmutableHashSet<uint>? known)) {
+			KnownPackages[bot.BotName] = [.. current.Keys];
+
+			return;
+		}
+
+		KnownPackages[bot.BotName] = [.. current.Keys];
+
+		// New packages acquired since the baseline, excluding free grants (PaymentMethod None) so the
+		// FreePackages plugin's constant activity doesn't flood this event.
+		List<uint> redeemed = current.Where(entry => !known.Contains(entry.Key) && (entry.Value != EPaymentMethod.None)).Select(static entry => entry.Key).ToList();
+
+		if (redeemed.Count > 0) {
+			_ = ReportRedeemedAsync(bot, redeemed, current[redeemed[0]]);
+		}
+	}
+
+	private async Task ReportRedeemedAsync(Bot bot, List<uint> packageIDs, EPaymentMethod paymentMethod) {
+		IReadOnlyList<string> names = await GameNameResolver.ResolveAsync(bot, packageIDs).ConfigureAwait(false);
+
+		string source = paymentMethod == EPaymentMethod.ActivationCode ? " via a key" : paymentMethod.HasFlag(EPaymentMethod.Complimentary) ? " via a gift" : "";
+
+		string what = names.Count > 0
+			? string.Join(", ", names)
+			: packageIDs.Count == 1 ? $"a new license (package {packageIDs[0]})" : $"{packageIDs.Count} new licenses ({string.Join(", ", packageIDs)})";
+
+		Report(bot, EEventType.GameRedeemed, ENotificationPriority.Normal, $"Bot {bot.BotName} added {what}{source}.");
 	}
 
 	public Task OnUpdateProceeding(Version currentVersion, Version newVersion) => Task.CompletedTask;
@@ -364,6 +425,7 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 		EEventType.TradeRefused => $"🚫 {botName} trade refused",
 		EEventType.GiftReceived => $"🎁 {botName} gift received",
 		EEventType.AccountAlert => $"🔔 {botName} account alert",
+		EEventType.GameRedeemed => $"🎮 {botName} new game",
 		EEventType.BotAdded => $"➕ {botName} added",
 		EEventType.BotRemoved => $"➖ {botName} removed",
 		_ => $"🔔 {botName}"

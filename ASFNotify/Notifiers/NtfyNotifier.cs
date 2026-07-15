@@ -60,6 +60,7 @@ internal sealed class NtfyNotifier : INotifier {
 		EEventType.TradeRefused => "no_entry",
 		EEventType.GiftReceived => "gift",
 		EEventType.AccountAlert => "rotating_light",
+		EEventType.GameRedeemed => "video_game",
 		EEventType.BotAdded => "heavy_plus_sign",
 		EEventType.BotRemoved => "heavy_minus_sign",
 		EEventType.AsfStarted => "rocket",

@@ -36,6 +36,7 @@ internal sealed class AppriseNotifier : INotifier {
 		EEventType.FarmingFinished => "success",
 		EEventType.TradeAccepted => "success",
 		EEventType.GiftReceived => "success",
+		EEventType.GameRedeemed => "success",
 		EEventType.BotAdded => "success",
 		EEventType.AsfStarted => "success",
 		EEventType.Disconnected => "warning",

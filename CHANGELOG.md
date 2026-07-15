@@ -3,6 +3,18 @@
 All notable changes to ASFNotify are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); the version numbers match the plugin's assembly version.
 
+## [1.3.0.0] – 2026-07-15
+
+### Added
+- `GameRedeemed` event (opt-in): notifies when a new license is added to a bot — a redeemed key (including
+  keys forwarded internally between bots) or a gift. Detected via the Steam license list, with free-package
+  grants filtered out by payment method. The game name is resolved through PICS when possible, falling back
+  to the package ID.
+
+### Changed
+- Neutralised the `GiftReceived` and `AccountAlert` messages: they no longer tell you to log in and act
+  manually, which is wrong when the account auto-redeems.
+
 ## [1.2.0.0] – 2026-07-15
 
 ### Added
@@ -46,5 +58,6 @@ Built against ArchiSteamFarm V6.3.7.0 (.NET 10); verified live on ASF V6.3.8.0.
 - `IGitHubPluginUpdates` for ASF-native plugin updates.
 - Trimmed-runtime-safe config parsing (`JsonElement`) and payload building (`Utf8JsonWriter`).
 
+[1.3.0.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.0.0
 [1.2.0.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.2.0.0
 [1.1.0.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.1.0.0

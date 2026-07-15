@@ -13,6 +13,7 @@ internal enum EEventType : byte {
 	TradeRefused,
 	GiftReceived,
 	AccountAlert,
+	GameRedeemed,
 	BotAdded,
 	BotRemoved,
 	AsfStarted,

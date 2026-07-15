@@ -84,7 +84,8 @@ Each event is toggled through the `Events` config list. The default set is the l
 | Event | Default | Prio | Fires when |
 |-------|:-------:|:----:|-------------|
 | `AccountAlert` | on | High | Steam raised an account alert (security/account status) for a bot. Only the fact that an alert exists is available, not its content. |
-| `GiftReceived` | on | Normal | A bot received a Steam gift (claim it before it expires). |
+| `GiftReceived` | on | Normal | A bot received a Steam gift. |
+| `GameRedeemed` | off | Normal | A new license was added to a bot: a redeemed key (including keys forwarded internally between bots) or a gift. Free-package grants are filtered out. The game name is resolved when possible, otherwise the package ID is shown. |
 
 **Bot lifecycle**
 
@@ -133,8 +134,8 @@ A few things worth knowing:
 3. Add an [`ASFNotify` config block](#configuration) to your `ASF.json` and/or a bot config.
 4. Restart ASF. On startup you should see something like:
    ```
-   InitPlugins() Loading ASFNotify V1.2.0.0...
-   [ASFNotify] v1.2.0.0 loaded.
+   InitPlugins() Loading ASFNotify V1.3.0.0...
+   [ASFNotify] v1.3.0.0 loaded.
    [ASFNotify] Active backends: … . Reported events: … .
    ```
 
@@ -194,7 +195,7 @@ ASFNotify reads a single object under the top-level `ASFNotify` key. Put it in `
 | `Gotify.Token` | string | — | Gotify application token. Active when both `Url` and `Token` are set. Never logged. |
 | `Apprise.Url` | string (URL) | — | apprise-api notify endpoint, e.g. `http://host:8000/notify/<key>`. Active when set. |
 | `Apprise.Tags` | string | — | Optional comma-separated Apprise tag filter. |
-| `Events` | string[] | *(see [Reported events](#reported-events))* | Which events to report. Valid names: `Disconnected`, `LoginAttention`, `LoggedOn`, `FarmingStarted`, `FarmingFinished`, `FarmingStopped`, `TradeOffer`, `TradeAccepted`, `TradeRefused`, `AccountAlert`, `GiftReceived`, `BotAdded`, `BotRemoved`, `AsfStarted`, `AsfUpdated`, `PluginUpdated`. Case-insensitive; unknown names are ignored. |
+| `Events` | string[] | *(see [Reported events](#reported-events))* | Which events to report. Valid names: `Disconnected`, `LoginAttention`, `LoggedOn`, `FarmingStarted`, `FarmingFinished`, `FarmingStopped`, `TradeOffer`, `TradeAccepted`, `TradeRefused`, `AccountAlert`, `GiftReceived`, `GameRedeemed`, `BotAdded`, `BotRemoved`, `AsfStarted`, `AsfUpdated`, `PluginUpdated`. Case-insensitive; unknown names are ignored. |
 | `CooldownMinutes` | number (0–255) | `5` | Minimum minutes between two notifications for the same bot and event. `0` disables it. |
 | `Templates` | object | — | Per-event message overrides, keyed by event name. See [templating](#message-templating). |
 
@@ -255,6 +256,7 @@ Each event also gets a fitting ntfy tag (emoji) and Apprise type:
 | `TradeAccepted` | Normal | `white_check_mark` | `success` |
 | `TradeRefused` | Low | `no_entry` | `warning` |
 | `GiftReceived` | Normal | `gift` | `success` |
+| `GameRedeemed` | Normal | `video_game` | `success` |
 | `BotAdded` | Low | `heavy_plus_sign` | `success` |
 | `BotRemoved` | Low | `heavy_minus_sign` | `warning` |
 | `AsfStarted` | Normal | `rocket` | `success` |
@@ -369,7 +371,8 @@ The `DebugFast` config skips analyzers for fast iteration; `Release` runs the fu
 ## Known limitations
 
 - Steam Guard / 2FA prompts aren't reported directly. ASF has no plugin callback for an "input needed" state. `LoginAttention` is the closest proxy: it classifies auth-related disconnect reasons (bad password, 2FA, ban, rate-limit) and flags them high-priority. It can't catch a prompt that isn't preceded by such a disconnect.
-- Steam user-notification events carry no detail. `GiftReceived` and `AccountAlert` come from Steam's notification feed, which only signals that a notification of that type appeared, not what it is. The push just tells you to go check the account.
+- Steam user-notification events carry no detail. `GiftReceived` and `AccountAlert` come from Steam's notification feed, which only signals that a notification of that type appeared, not what it is.
+- `GameRedeemed` name resolution is best-effort. The Steam license list only carries package IDs; the game name is looked up via PICS and may occasionally fall back to the package ID (e.g. if PICS doesn't respond). Free-package grants are filtered out by payment method, so it targets keys and gifts.
 - Card-drop progress, per-license changes, mobile-confirmation prompts and an ASF-process-down alert aren't available, because ASF has no plugin callback for them. A dead process can't push its own alert either; use an external heartbeat for that.
 - Best-effort, not a guaranteed log. If a backend is unreachable the notification is retried once, then dropped and logged. Nothing survives an ASF restart.
 - Config is readable through ASF's IPC. Prefer publish-only / scoped tokens for ntfy and Gotify.
