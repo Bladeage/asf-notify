@@ -16,10 +16,14 @@ internal sealed class NtfyNotifier : INotifier {
 		NtfyConfig ntfy = config.Ntfy!;
 		Uri url = ntfy.Url!;
 
-		// Use the JSON publish endpoint (POST to the host root with the topic in the body) so non-ASCII
-		// titles survive - HTTP headers would be latin-1.
-		string topic = url.AbsolutePath.Trim('/');
-		Uri baseUrl = new(url.GetLeftPart(UriPartial.Authority));
+		// Use the JSON publish endpoint (POST to the server root with the topic in the body) so non-ASCII
+		// titles survive - HTTP headers would be latin-1. The topic is the LAST path segment; anything
+		// before it is a reverse-proxy subpath and stays part of the base URL.
+		string path = url.AbsolutePath.Trim('/');
+		int lastSlash = path.LastIndexOf('/');
+		string topic = lastSlash >= 0 ? path[(lastSlash + 1)..] : path;
+		string authority = url.GetLeftPart(UriPartial.Authority);
+		Uri baseUrl = new(lastSlash >= 0 ? $"{authority}/{path[..lastSlash]}" : authority);
 
 		IReadOnlyCollection<KeyValuePair<string, string>>? headers = string.IsNullOrEmpty(ntfy.Token)
 			? null

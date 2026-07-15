@@ -16,11 +16,17 @@ namespace ASFNotify;
 internal sealed class NotificationDispatcher {
 	private const int QueueCapacity = 64;
 
+	// Whole-dispatch budget for one notification across all backends and the retry, so one dead
+	// backend can't stall the single consumer for minutes.
+	private const int DispatchTimeoutSeconds = 25;
+	private const int RetryDelaySeconds = 3;
+
 	private readonly Channel<QueueItem> Channel = System.Threading.Channels.Channel.CreateBounded<QueueItem>(
 		new BoundedChannelOptions(QueueCapacity) {
 			FullMode = BoundedChannelFullMode.DropOldest,
 			SingleReader = true
-		}
+		},
+		static dropped => ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] Notification queue is full, dropped {dropped.Notification.Type} for {dropped.Notification.BotName}.")
 	);
 
 	private readonly ConcurrentDictionary<(string BotName, EEventType Type), DateTime> LastSent = new();
@@ -39,42 +45,68 @@ internal sealed class NotificationDispatcher {
 			return;
 		}
 
-		if (!Channel.Writer.TryWrite(new QueueItem(notification, config))) {
-			ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] Notification queue is full, dropped {notification.Type} for {notification.BotName}.");
-		}
+		// DropOldest means TryWrite never fails; the drop callback logs any eviction.
+		Channel.Writer.TryWrite(new QueueItem(notification, config));
 	}
 
 	private async Task ConsumeAsync() {
-		await foreach (QueueItem item in Channel.Reader.ReadAllAsync().ConfigureAwait(false)) {
-			try {
-				await DispatchAsync(item).ConfigureAwait(false);
-			} catch (Exception e) {
-				ASF.ArchiLogger.LogGenericWarningException(e);
+		try {
+			await foreach (QueueItem item in Channel.Reader.ReadAllAsync().ConfigureAwait(false)) {
+				try {
+					await DispatchAsync(item).ConfigureAwait(false);
+				} catch (Exception e) {
+					// A failing notifier must never take down the consumer loop.
+					ASF.ArchiLogger.LogGenericWarningException(e);
+				}
 			}
+		} catch (Exception e) {
+			// The consumer dying would silently stop all future notifications; make that visible.
+			ASF.ArchiLogger.LogGenericException(e);
 		}
 	}
 
 	private async Task DispatchAsync(QueueItem item) {
+		using CancellationTokenSource cts = new(TimeSpan.FromSeconds(DispatchTimeoutSeconds));
+
+		bool delivered = false;
+
 		foreach (INotifier notifier in Notifiers) {
 			if (!notifier.IsConfigured(item.Config)) {
 				continue;
 			}
 
-			bool delivered = await TrySendAsync(notifier, item).ConfigureAwait(false);
+			bool ok = await TrySendAsync(notifier, item, cts.Token).ConfigureAwait(false);
 
-			if (!delivered) {
-				delivered = await TrySendAsync(notifier, item).ConfigureAwait(false);
+			if (!ok && !cts.IsCancellationRequested) {
+				// One retry after a short delay; an immediate retry just re-hits the same connect failure.
+				try {
+					await Task.Delay(TimeSpan.FromSeconds(RetryDelaySeconds), cts.Token).ConfigureAwait(false);
+
+					ok = await TrySendAsync(notifier, item, cts.Token).ConfigureAwait(false);
+				} catch (OperationCanceledException) {
+					// Out of time for this item.
+				}
 			}
 
-			if (!delivered) {
+			if (ok) {
+				delivered = true;
+			} else {
 				ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] {notifier.Name} failed to deliver {item.Notification.Type} for {item.Notification.BotName}.");
 			}
 		}
+
+		// Start the cooldown only once something was actually delivered, so a failed send doesn't
+		// suppress the next (possibly important) repeat for the whole window.
+		if (delivered) {
+			LastSent[(item.Notification.BotName, item.Notification.Type)] = DateTime.UtcNow;
+		}
 	}
 
-	private static async Task<bool> TrySendAsync(INotifier notifier, QueueItem item) {
+	private static async Task<bool> TrySendAsync(INotifier notifier, QueueItem item, CancellationToken cancellationToken) {
 		try {
-			return await notifier.SendAsync(item.Config, item.Notification).ConfigureAwait(false);
+			return await notifier.SendAsync(item.Config, item.Notification, cancellationToken).ConfigureAwait(false);
+		} catch (OperationCanceledException) {
+			return false;
 		} catch (Exception e) {
 			ASF.ArchiLogger.LogGenericWarningException(e);
 
@@ -82,28 +114,13 @@ internal sealed class NotificationDispatcher {
 		}
 	}
 
+	// Read-only check; the timestamp is written after a successful delivery in DispatchAsync.
 	private bool IsOnCooldown(NotificationEvent notification, byte cooldownMinutes) {
 		if (cooldownMinutes == 0) {
 			return false;
 		}
 
-		TimeSpan cooldown = TimeSpan.FromMinutes(cooldownMinutes);
-		DateTime now = DateTime.UtcNow;
-		(string BotName, EEventType Type) key = (notification.BotName, notification.Type);
-
-		while (true) {
-			if (LastSent.TryGetValue(key, out DateTime last)) {
-				if (now - last < cooldown) {
-					return true;
-				}
-
-				if (LastSent.TryUpdate(key, now, last)) {
-					return false;
-				}
-			} else if (LastSent.TryAdd(key, now)) {
-				return false;
-			}
-		}
+		return LastSent.TryGetValue((notification.BotName, notification.Type), out DateTime last) && (DateTime.UtcNow - last < TimeSpan.FromMinutes(cooldownMinutes));
 	}
 
 	private sealed record QueueItem(NotificationEvent Notification, PluginConfig Config);

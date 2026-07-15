@@ -8,15 +8,16 @@ using SteamKit2;
 
 namespace ASFNotify.Steam;
 
-// Best-effort resolution of package IDs to Steam game names via PICS. Returns an empty list on any failure,
-// which the caller falls back from to plain package IDs. Only apps of type "game" are reported, to keep
-// DLC/config/demo entries out of the notification.
+// Best-effort resolution of package IDs to Steam app names via PICS. Returns an empty list on any
+// failure, from which the caller falls back to plain package IDs. Access tokens are fetched first so
+// token-gated (often newly released) titles still resolve; "game" apps are preferred, but any app name
+// beats a raw package ID, so DLC/software/soundtrack packages still get a name.
 internal static class GameNameResolver {
 	internal static async Task<IReadOnlyList<string>> ResolveAsync(Bot bot, IReadOnlyCollection<uint> packageIDs) {
 		try {
 			HashSet<uint> appIDs = await GetAppIDsAsync(bot, packageIDs).ConfigureAwait(false);
 
-			return appIDs.Count > 0 ? await GetGameNamesAsync(bot, appIDs).ConfigureAwait(false) : [];
+			return appIDs.Count > 0 ? await GetNamesAsync(bot, appIDs).ConfigureAwait(false) : [];
 		} catch (Exception e) {
 			ASF.ArchiLogger.LogGenericWarningException(e);
 
@@ -27,7 +28,11 @@ internal static class GameNameResolver {
 	private static async Task<HashSet<uint>> GetAppIDsAsync(Bot bot, IReadOnlyCollection<uint> packageIDs) {
 		HashSet<uint> appIDs = [];
 
-		AsyncJobMultiple<SteamApps.PICSProductInfoCallback>.ResultSet result = await bot.SteamApps.PICSGetProductInfo([], packageIDs.Select(static id => new SteamApps.PICSRequest(id))).ToTask().ConfigureAwait(false);
+		SteamApps.PICSTokensCallback tokens = await bot.SteamApps.PICSGetAccessTokens([], packageIDs).ToTask().ConfigureAwait(false);
+
+		IEnumerable<SteamApps.PICSRequest> requests = packageIDs.Select(id => new SteamApps.PICSRequest(id, tokens.PackageTokens.GetValueOrDefault(id)));
+
+		AsyncJobMultiple<SteamApps.PICSProductInfoCallback>.ResultSet result = await bot.SteamApps.PICSGetProductInfo([], requests).ToTask().ConfigureAwait(false);
 
 		if (result.Results == null) {
 			return appIDs;
@@ -50,13 +55,18 @@ internal static class GameNameResolver {
 		return appIDs;
 	}
 
-	private static async Task<IReadOnlyList<string>> GetGameNamesAsync(Bot bot, HashSet<uint> appIDs) {
-		List<string> names = [];
+	private static async Task<IReadOnlyList<string>> GetNamesAsync(Bot bot, HashSet<uint> appIDs) {
+		SteamApps.PICSTokensCallback tokens = await bot.SteamApps.PICSGetAccessTokens(appIDs, []).ToTask().ConfigureAwait(false);
 
-		AsyncJobMultiple<SteamApps.PICSProductInfoCallback>.ResultSet result = await bot.SteamApps.PICSGetProductInfo(appIDs.Select(static id => new SteamApps.PICSRequest(id)), []).ToTask().ConfigureAwait(false);
+		IEnumerable<SteamApps.PICSRequest> requests = appIDs.Select(id => new SteamApps.PICSRequest(id, tokens.AppTokens.GetValueOrDefault(id)));
+
+		AsyncJobMultiple<SteamApps.PICSProductInfoCallback>.ResultSet result = await bot.SteamApps.PICSGetProductInfo(requests, []).ToTask().ConfigureAwait(false);
+
+		List<string> gameNames = [];
+		List<string> otherNames = [];
 
 		if (result.Results == null) {
-			return names;
+			return gameNames;
 		}
 
 		foreach (Dictionary<uint, SteamApps.PICSProductInfoCallback.PICSProductInfo> apps in result.Results.Select(static callback => callback.Apps)) {
@@ -65,20 +75,25 @@ internal static class GameNameResolver {
 					continue;
 				}
 
-				string? type = app.KeyValues["common"]["type"].AsString();
+				string? name = app.KeyValues["common"]["name"].AsString();
 
-				if (string.IsNullOrEmpty(type) || !type.Equals("game", StringComparison.OrdinalIgnoreCase)) {
+				if (string.IsNullOrEmpty(name)) {
 					continue;
 				}
 
-				string? name = app.KeyValues["common"]["name"].AsString();
+				string? type = app.KeyValues["common"]["type"].AsString();
 
-				if (!string.IsNullOrEmpty(name) && !names.Contains(name)) {
-					names.Add(name);
+				if (!string.IsNullOrEmpty(type) && type.Equals("game", StringComparison.OrdinalIgnoreCase)) {
+					if (!gameNames.Contains(name)) {
+						gameNames.Add(name);
+					}
+				} else if (!otherNames.Contains(name)) {
+					otherNames.Add(name);
 				}
 			}
 		}
 
-		return names;
+		// Prefer game titles; if the redeemed packages were DLC/software only, still report their names.
+		return gameNames.Count > 0 ? gameNames : otherNames;
 	}
 }

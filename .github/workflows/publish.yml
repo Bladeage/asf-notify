@@ -1,6 +1,9 @@
 name: Plugin-publish
 
-on: [push, pull_request]
+on:
+  push:
+    tags:
+      - '*'
 
 env:
   CONFIGURATION: Release
@@ -150,6 +153,18 @@ jobs:
       with:
         show-progress: false
 
+    - name: Verify tag matches plugin version
+      shell: sh
+      run: |
+        set -eu
+
+        version="$(grep -oE '<Version>[^<]+' Directory.Build.props | head -n 1 | sed 's/<Version>//')"
+
+        if [ "$version" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag '${GITHUB_REF_NAME}' does not match Directory.Build.props <Version> '${version}'. Refusing to release." >&2
+            exit 1
+        fi
+
     - name: Download plugin artifact from ubuntu-latest
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
@@ -202,9 +217,9 @@ jobs:
         artifacts: "out/*"
         bodyFile: .github/RELEASE_TEMPLATE.md
         generateReleaseNotes: true
-        immutableCreate: false
+        immutableCreate: true
         makeLatest: true
         name: ${{ needs.publish.outputs.PLUGIN_NAME }} V${{ github.ref_name }}
         prerelease: false
         token: ${{ secrets.GITHUB_TOKEN }}
-        updateOnlyUnreleased: false
+        updateOnlyUnreleased: true

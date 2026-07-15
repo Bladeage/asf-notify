@@ -134,8 +134,8 @@ A few things worth knowing:
 3. Add an [`ASFNotify` config block](#configuration) to your `ASF.json` and/or a bot config.
 4. Restart ASF. On startup you should see something like:
    ```
-   InitPlugins() Loading ASFNotify V1.3.0.0...
-   [ASFNotify] v1.3.0.0 loaded.
+   InitPlugins() Loading ASFNotify V1.3.1.0...
+   [ASFNotify] v1.3.1.0 loaded.
    [ASFNotify] Active backends: … . Reported events: … .
    ```
 
@@ -230,7 +230,7 @@ If `Templates` has an entry for an event, its string replaces the default messag
 | `{Reason}` | Disconnect reason (`EResult`) | `Disconnected` |
 | `{FarmedSomething}` | `True` / `False` | `FarmingFinished` |
 
-Only the message body is templated; the title (and its emoji) is generated per event.
+Only the message body is templated; the title (and its emoji) is generated per event. Server-scoped events (`AsfStarted`, `AsfUpdated`, `PluginUpdated`) use fixed messages and aren't templated.
 
 ### Priority & tag mapping
 

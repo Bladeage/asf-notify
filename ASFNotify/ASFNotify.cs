@@ -29,6 +29,7 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 	private const string ServerLabel = "ASF";
 	private const int StartupGraceSeconds = 60;
 	private const int GlobalSendTimeoutSeconds = 10;
+	private const int MaxRedeemBatch = 25;
 
 	private static readonly ImmutableArray<INotifier> Notifiers = [new NtfyNotifier(), new GotifyNotifier(), new AppriseNotifier()];
 
@@ -239,7 +240,15 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 	}
 
 	private void OnLicenseList(Bot bot, SteamApps.LicenseListCallback callback) {
-		if (callback.LicenseList == null) {
+		// Steam occasionally sends empty/truncated license lists; ignore them so we never wipe the baseline.
+		if (callback.LicenseList is not { Count: > 0 }) {
+			return;
+		}
+
+		// Nothing to track unless GameRedeemed is enabled for this bot (also avoids needless PICS work).
+		PluginConfig? config = ResolveConfig(bot);
+
+		if (config is not { HasAnyBackend: true } || !config.EffectiveEvents.Contains(EEventType.GameRedeemed)) {
 			return;
 		}
 
@@ -253,34 +262,65 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 			current[license.PackageID] = license.PaymentMethod;
 		}
 
+		ImmutableHashSet<uint> currentSet = [.. current.Keys];
+
 		// The first callback (initial license list at login) just sets the baseline.
 		if (!KnownPackages.TryGetValue(bot.BotName, out ImmutableHashSet<uint>? known)) {
-			KnownPackages[bot.BotName] = [.. current.Keys];
+			KnownPackages[bot.BotName] = currentSet;
 
 			return;
 		}
 
-		KnownPackages[bot.BotName] = [.. current.Keys];
+		KnownPackages[bot.BotName] = currentSet;
 
 		// New packages acquired since the baseline, excluding free grants (PaymentMethod None) so the
 		// FreePackages plugin's constant activity doesn't flood this event.
-		List<uint> redeemed = current.Where(entry => !known.Contains(entry.Key) && (entry.Value != EPaymentMethod.None)).Select(static entry => entry.Key).ToList();
+		List<KeyValuePair<uint, EPaymentMethod>> redeemed = current.Where(entry => !known.Contains(entry.Key) && (entry.Value != EPaymentMethod.None)).ToList();
 
-		if (redeemed.Count > 0) {
-			_ = ReportRedeemedAsync(bot, redeemed, current[redeemed[0]]);
+		if (redeemed.Count == 0) {
+			return;
+		}
+
+		// A large jump usually means Steam resynced the whole library (e.g. after a session rebuild),
+		// not an actual mass redemption; rebase quietly instead of reporting the entire library.
+		if (redeemed.Count > MaxRedeemBatch) {
+			ASF.ArchiLogger.LogGenericInfo($"[ASFNotify] {bot.BotName}: {redeemed.Count} new packages at once — treating as a library resync, no GameRedeemed notification.");
+
+			return;
+		}
+
+		_ = ReportRedeemedAsync(bot, redeemed);
+	}
+
+	private async Task ReportRedeemedAsync(Bot bot, List<KeyValuePair<uint, EPaymentMethod>> redeemed) {
+		try {
+			List<uint> packageIDs = redeemed.Select(static entry => entry.Key).ToList();
+
+			IReadOnlyList<string> names = await GameNameResolver.ResolveAsync(bot, packageIDs).ConfigureAwait(false);
+
+			string what = names.Count > 0
+				? string.Join(", ", names)
+				: packageIDs.Count == 1 ? $"a new license (package {packageIDs[0]})" : $"{packageIDs.Count} new licenses ({string.Join(", ", packageIDs)})";
+
+			Report(bot, EEventType.GameRedeemed, ENotificationPriority.Normal, $"Bot {bot.BotName} added {what}{SourceSuffix(redeemed)}.");
+		} catch (Exception e) {
+			ASF.ArchiLogger.LogGenericWarningException(e);
 		}
 	}
 
-	private async Task ReportRedeemedAsync(Bot bot, List<uint> packageIDs, EPaymentMethod paymentMethod) {
-		IReadOnlyList<string> names = await GameNameResolver.ResolveAsync(bot, packageIDs).ConfigureAwait(false);
+	// Labels the source only when every redeemed package shares one payment method.
+	private static string SourceSuffix(List<KeyValuePair<uint, EPaymentMethod>> redeemed) {
+		EPaymentMethod method = redeemed[0].Value;
 
-		string source = paymentMethod == EPaymentMethod.ActivationCode ? " via a key" : paymentMethod.HasFlag(EPaymentMethod.Complimentary) ? " via a gift" : "";
+		if (redeemed.Any(entry => entry.Value != method)) {
+			return "";
+		}
 
-		string what = names.Count > 0
-			? string.Join(", ", names)
-			: packageIDs.Count == 1 ? $"a new license (package {packageIDs[0]})" : $"{packageIDs.Count} new licenses ({string.Join(", ", packageIDs)})";
-
-		Report(bot, EEventType.GameRedeemed, ENotificationPriority.Normal, $"Bot {bot.BotName} added {what}{source}.");
+		return method switch {
+			EPaymentMethod.ActivationCode => " via a key",
+			EPaymentMethod.Complimentary => " via a gift",
+			_ => ""
+		};
 	}
 
 	public Task OnUpdateProceeding(Version currentVersion, Version newVersion) => Task.CompletedTask;
@@ -312,7 +352,8 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 		}
 	}
 
-	// Returns true if the notification was actually enqueued (backend configured + event enabled).
+	// Returns true if this event is configured for delivery (a backend is set and the event is enabled).
+	// The notification may still be cooldown-suppressed or dropped downstream.
 	private bool Report(Bot bot, EEventType type, ENotificationPriority priority, string defaultMessage, string? reason = null, bool? farmedSomething = null) {
 		NotificationDispatcher? dispatcher = Dispatcher;
 

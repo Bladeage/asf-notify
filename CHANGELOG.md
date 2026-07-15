@@ -3,6 +3,27 @@
 All notable changes to ASFNotify are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); the version numbers match the plugin's assembly version.
 
+## [1.3.1.0] – 2026-07-15
+
+Hardening pass from a full code + publication review.
+
+### Fixed
+- `GameRedeemed` no longer reports the whole library when Steam sends an empty/truncated license list,
+  and treats an unusually large diff as a resync instead of a mass redemption.
+- The cooldown now starts only after a successful delivery, so a failed send no longer suppresses the
+  next (possibly important) repeat for the whole window.
+- Delivery has a per-notification timeout and a short delay before the single retry, so one unreachable
+  backend can't stall the queue for minutes.
+- Game-name resolution fetches PICS access tokens and falls back to non-"game" app names, so more
+  redemptions show a name instead of a raw package ID.
+- Gotify and ntfy URLs behind a reverse-proxy subpath now build the correct endpoint / topic.
+- Unknown `Events` names, unknown `Templates` keys and an invalid `CooldownMinutes` are logged instead
+  of being silently ignored. Queue evictions and an abnormal consumer exit are logged.
+
+### CI
+- The release job fails if the pushed tag doesn't match the plugin version; the publish workflow runs
+  only on tags; releases are marked immutable.
+
 ## [1.3.0.0] – 2026-07-15
 
 ### Added
@@ -24,8 +45,8 @@ All notable changes to ASFNotify are documented here. The format is based on
 ## [1.1.0.0] – 2026-07-14
 
 ### Added
-- **11 new notification events** (15 total) across ASF's `IBotTradeOffer2`, `IBotTradeOfferResults`,
-  `IBotUserNotifications`, `IUpdateAware` and `IPluginUpdates` hooks:
+- **11 new notification events** (15 total), hooking additional ASF plugin interfaces (connection,
+  farming, trade offers, Steam user notifications, bot lifecycle and ASF/plugin updates):
   `LoginAttention`, `FarmingStarted`, `TradeOffer`, `TradeAccepted`, `TradeRefused`,
   `GiftReceived`, `AccountAlert`, `BotAdded`, `BotRemoved`, `AsfUpdated`, `PluginUpdated`.
 - `LoginAttention` classifies auth-failure disconnects (bad password, 2FA/Steam Guard, ban, rate-limit)
@@ -46,10 +67,12 @@ All notable changes to ASFNotify are documented here. The format is based on
 
 Built against ArchiSteamFarm V6.3.7.0 (.NET 10); verified live on ASF V6.3.8.0.
 
-## [1.0.0.0] – 2026-07-14
+## [1.0.0.0] – 2026-07-14 (pre-publication)
+
+Never released on its own; the first public release was 1.1.0.0. Listed here for the record.
 
 ### Added
-- Initial release — event-driven push notifications for ArchiSteamFarm.
+- Initial version — event-driven push notifications for ArchiSteamFarm.
 - Backends: **ntfy**, **Gotify**, **Apprise** (any combination, config-driven).
 - Events: `Disconnected` (involuntary) and `FarmingFinished` on by default; `LoggedOn` and `FarmingStopped` opt-in.
 - Channel-based dispatcher: non-blocking handlers, per-`(bot, event)` cooldown, one retry, best-effort delivery.
@@ -58,6 +81,7 @@ Built against ArchiSteamFarm V6.3.7.0 (.NET 10); verified live on ASF V6.3.8.0.
 - `IGitHubPluginUpdates` for ASF-native plugin updates.
 - Trimmed-runtime-safe config parsing (`JsonElement`) and payload building (`Utf8JsonWriter`).
 
+[1.3.1.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.1.0
 [1.3.0.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.0.0
 [1.2.0.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.2.0.0
 [1.1.0.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.1.0.0

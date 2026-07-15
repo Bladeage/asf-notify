@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Text.Json;
+using ArchiSteamFarm.Core;
 using ASFNotify.Data;
 
 namespace ASFNotify.Configuration;
@@ -71,6 +72,10 @@ internal sealed record PluginConfig {
 
 					if (!string.IsNullOrEmpty(name)) {
 						events.Add(name);
+
+						if (!Enum.TryParse(name, true, out EEventType parsed) || !Enum.IsDefined(parsed)) {
+							ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] Ignoring unknown event name in \"Events\": {name}");
+						}
 					}
 				}
 			}
@@ -84,8 +89,18 @@ internal sealed record PluginConfig {
 			foreach (JsonProperty property in templatesElement.EnumerateObject()) {
 				if (property.Value.ValueKind == JsonValueKind.String) {
 					templates[property.Name] = property.Value.GetString() ?? string.Empty;
+
+					if (!Enum.TryParse(property.Name, true, out EEventType parsed) || !Enum.IsDefined(parsed)) {
+						ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] Ignoring template for unknown event: {property.Name}");
+					}
 				}
 			}
+		}
+
+		byte? cooldownMinutes = root.GetByteOrNull("CooldownMinutes");
+
+		if ((cooldownMinutes == null) && root.TryGetPropertyCI("CooldownMinutes", out JsonElement cooldownElement) && (cooldownElement.ValueKind != JsonValueKind.Null)) {
+			ASF.ArchiLogger.LogGenericWarning("[ASFNotify] CooldownMinutes must be a whole number 0-255; using the default.");
 		}
 
 		return new PluginConfig {
@@ -93,7 +108,7 @@ internal sealed record PluginConfig {
 			Gotify = root.TryGetPropertyCI("Gotify", out JsonElement gotify) && (gotify.ValueKind == JsonValueKind.Object) ? GotifyConfig.FromJson(gotify) : null,
 			Apprise = root.TryGetPropertyCI("Apprise", out JsonElement apprise) && (apprise.ValueKind == JsonValueKind.Object) ? AppriseConfig.FromJson(apprise) : null,
 			Events = events,
-			CooldownMinutes = root.GetByteOrNull("CooldownMinutes"),
+			CooldownMinutes = cooldownMinutes,
 			Templates = templates
 		};
 	}
