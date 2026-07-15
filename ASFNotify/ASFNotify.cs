@@ -240,15 +240,9 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 	}
 
 	private void OnLicenseList(Bot bot, SteamApps.LicenseListCallback callback) {
-		// Steam occasionally sends empty/truncated license lists; ignore them so we never wipe the baseline.
-		if (callback.LicenseList is not { Count: > 0 }) {
-			return;
-		}
-
-		// Nothing to track unless GameRedeemed is enabled for this bot (also avoids needless PICS work).
-		PluginConfig? config = ResolveConfig(bot);
-
-		if (config is not { HasAnyBackend: true } || !config.EffectiveEvents.Contains(EEventType.GameRedeemed)) {
+		// Ignore empty/truncated or non-OK callbacks; Steam sends these in the wild and they must not
+		// disturb the baseline.
+		if ((callback.Result != EResult.OK) || callback.LicenseList is not { Count: > 0 }) {
 			return;
 		}
 
@@ -264,36 +258,45 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 
 		ImmutableHashSet<uint> currentSet = [.. current.Keys];
 
-		// The first callback (initial license list at login) just sets the baseline.
-		if (!KnownPackages.TryGetValue(bot.BotName, out ImmutableHashSet<uint>? known)) {
-			KnownPackages[bot.BotName] = currentSet;
+		// Always maintain the baseline (cheap, no PICS), even when GameRedeemed is disabled, so re-enabling
+		// it later doesn't replay everything acquired meanwhile. Union rather than replace, so a transiently
+		// truncated list can't drop packages and later make them look newly redeemed.
+		bool hadBaseline = KnownPackages.TryGetValue(bot.BotName, out ImmutableHashSet<uint>? known);
+		KnownPackages[bot.BotName] = hadBaseline ? known!.Union(currentSet) : currentSet;
 
+		// The first callback (initial license list at login) is only the baseline.
+		if (!hadBaseline) {
 			return;
 		}
 
-		KnownPackages[bot.BotName] = currentSet;
+		// Only diff and notify when the event is enabled for this bot and a backend is configured.
+		PluginConfig? config = ResolveConfig(bot);
+
+		if (config is not { HasAnyBackend: true } || !config.EffectiveEvents.Contains(EEventType.GameRedeemed)) {
+			return;
+		}
 
 		// New packages acquired since the baseline, excluding free grants (PaymentMethod None) so the
 		// FreePackages plugin's constant activity doesn't flood this event.
-		List<KeyValuePair<uint, EPaymentMethod>> redeemed = current.Where(entry => !known.Contains(entry.Key) && (entry.Value != EPaymentMethod.None)).ToList();
+		List<KeyValuePair<uint, EPaymentMethod>> redeemed = current.Where(entry => !known!.Contains(entry.Key) && (entry.Value != EPaymentMethod.None)).ToList();
 
-		if (redeemed.Count == 0) {
-			return;
+		if (redeemed.Count > 0) {
+			_ = ReportRedeemedAsync(bot, redeemed);
 		}
-
-		// A large jump usually means Steam resynced the whole library (e.g. after a session rebuild),
-		// not an actual mass redemption; rebase quietly instead of reporting the entire library.
-		if (redeemed.Count > MaxRedeemBatch) {
-			ASF.ArchiLogger.LogGenericInfo($"[ASFNotify] {bot.BotName}: {redeemed.Count} new packages at once — treating as a library resync, no GameRedeemed notification.");
-
-			return;
-		}
-
-		_ = ReportRedeemedAsync(bot, redeemed);
 	}
 
 	private async Task ReportRedeemedAsync(Bot bot, List<KeyValuePair<uint, EPaymentMethod>> redeemed) {
 		try {
+			string suffix = SourceSuffix(redeemed);
+
+			// A very large batch is aggregated without per-title PICS lookups (avoids a big lookup burst
+			// and an unwieldy message) while still telling the user something happened.
+			if (redeemed.Count > MaxRedeemBatch) {
+				Report(bot, EEventType.GameRedeemed, ENotificationPriority.Normal, $"Bot {bot.BotName} added {redeemed.Count} new licenses{suffix}.");
+
+				return;
+			}
+
 			List<uint> packageIDs = redeemed.Select(static entry => entry.Key).ToList();
 
 			IReadOnlyList<string> names = await GameNameResolver.ResolveAsync(bot, packageIDs).ConfigureAwait(false);
@@ -302,7 +305,7 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 				? string.Join(", ", names)
 				: packageIDs.Count == 1 ? $"a new license (package {packageIDs[0]})" : $"{packageIDs.Count} new licenses ({string.Join(", ", packageIDs)})";
 
-			Report(bot, EEventType.GameRedeemed, ENotificationPriority.Normal, $"Bot {bot.BotName} added {what}{SourceSuffix(redeemed)}.");
+			Report(bot, EEventType.GameRedeemed, ENotificationPriority.Normal, $"Bot {bot.BotName} added {what}{suffix}.");
 		} catch (Exception e) {
 			ASF.ArchiLogger.LogGenericWarningException(e);
 		}

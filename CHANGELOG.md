@@ -3,6 +3,26 @@
 All notable changes to ASFNotify are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); the version numbers match the plugin's assembly version.
 
+## [1.3.2.0] – 2026-07-15
+
+Fixes regressions a re-review found in the 1.3.1 hardening.
+
+### Fixed
+- Dispatcher: each send attempt has its own timeout instead of one shared budget, so a single dead
+  backend can no longer starve the others or get them mislogged as failed; delivered / failed / timed
+  out / skipped are now logged distinctly.
+- The cooldown is re-checked at delivery time, restoring burst suppression (a flapping bot collapses to
+  one notification per window) while still starting the window only after a successful send.
+- `GameRedeemed` maintains its baseline on every valid license list (even while the event is disabled)
+  and unions rather than replaces it, so re-enabling the event or a transiently truncated list can't
+  replay old acquisitions. Non-OK callbacks are ignored.
+- A very large redeem batch is sent as an aggregated "added N new licenses" instead of being dropped.
+- Gotify URL handling no longer breaks when the configured URL carries a query or fragment.
+- Config parsing warns on wrong-type `Events` / `Templates` values.
+
+### CI
+- The publish workflow triggers only on version-shaped tags; `ci.yml` runs a publish smoke test on every push.
+
 ## [1.3.1.0] – 2026-07-15
 
 Hardening pass from a full code + publication review.
@@ -81,6 +101,7 @@ Never released on its own; the first public release was 1.1.0.0. Listed here for
 - `IGitHubPluginUpdates` for ASF-native plugin updates.
 - Trimmed-runtime-safe config parsing (`JsonElement`) and payload building (`Utf8JsonWriter`).
 
+[1.3.2.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.2.0
 [1.3.1.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.1.0
 [1.3.0.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.0.0
 [1.2.0.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.2.0.0

@@ -16,9 +16,10 @@ namespace ASFNotify;
 internal sealed class NotificationDispatcher {
 	private const int QueueCapacity = 64;
 
-	// Whole-dispatch budget for one notification across all backends and the retry, so one dead
-	// backend can't stall the single consumer for minutes.
-	private const int DispatchTimeoutSeconds = 25;
+	// Each send attempt gets its own budget so one hung backend can't starve the others; the overall
+	// budget caps a single notification's total time across all backends and the retry.
+	private const int PerAttemptTimeoutSeconds = 10;
+	private const int OverallDispatchTimeoutSeconds = 45;
 	private const int RetryDelaySeconds = 3;
 
 	private readonly Channel<QueueItem> Channel = System.Threading.Channels.Channel.CreateBounded<QueueItem>(
@@ -66,7 +67,13 @@ internal sealed class NotificationDispatcher {
 	}
 
 	private async Task DispatchAsync(QueueItem item) {
-		using CancellationTokenSource cts = new(TimeSpan.FromSeconds(DispatchTimeoutSeconds));
+		// Re-check the cooldown here: a burst can race several events past the read-only Enqueue check
+		// before the first one delivers and stamps, so collapse them to one delivery per window.
+		if (IsOnCooldown(item.Notification, item.Config.EffectiveCooldownMinutes)) {
+			return;
+		}
+
+		using CancellationTokenSource overall = new(TimeSpan.FromSeconds(OverallDispatchTimeoutSeconds));
 
 		bool delivered = false;
 
@@ -75,23 +82,38 @@ internal sealed class NotificationDispatcher {
 				continue;
 			}
 
-			bool ok = await TrySendAsync(notifier, item, cts.Token).ConfigureAwait(false);
+			if (overall.IsCancellationRequested) {
+				ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] Dispatch budget exhausted, skipped {notifier.Name} for {item.Notification.Type}/{item.Notification.BotName}.");
 
-			if (!ok && !cts.IsCancellationRequested) {
+				continue;
+			}
+
+			SendOutcome outcome = await TrySendAsync(notifier, item, overall.Token).ConfigureAwait(false);
+
+			if ((outcome == SendOutcome.Failed) && !overall.IsCancellationRequested) {
 				// One retry after a short delay; an immediate retry just re-hits the same connect failure.
 				try {
-					await Task.Delay(TimeSpan.FromSeconds(RetryDelaySeconds), cts.Token).ConfigureAwait(false);
+					await Task.Delay(TimeSpan.FromSeconds(RetryDelaySeconds), overall.Token).ConfigureAwait(false);
 
-					ok = await TrySendAsync(notifier, item, cts.Token).ConfigureAwait(false);
+					outcome = await TrySendAsync(notifier, item, overall.Token).ConfigureAwait(false);
 				} catch (OperationCanceledException) {
-					// Out of time for this item.
+					outcome = SendOutcome.TimedOut;
 				}
 			}
 
-			if (ok) {
-				delivered = true;
-			} else {
-				ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] {notifier.Name} failed to deliver {item.Notification.Type} for {item.Notification.BotName}.");
+			switch (outcome) {
+				case SendOutcome.Delivered:
+					delivered = true;
+
+					break;
+				case SendOutcome.TimedOut:
+					ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] {notifier.Name} timed out sending {item.Notification.Type} for {item.Notification.BotName}.");
+
+					break;
+				default:
+					ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] {notifier.Name} failed to deliver {item.Notification.Type} for {item.Notification.BotName}.");
+
+					break;
 			}
 		}
 
@@ -102,25 +124,34 @@ internal sealed class NotificationDispatcher {
 		}
 	}
 
-	private static async Task<bool> TrySendAsync(INotifier notifier, QueueItem item, CancellationToken cancellationToken) {
+	private static async Task<SendOutcome> TrySendAsync(INotifier notifier, QueueItem item, CancellationToken overallToken) {
+		using CancellationTokenSource attempt = CancellationTokenSource.CreateLinkedTokenSource(overallToken);
+		attempt.CancelAfter(TimeSpan.FromSeconds(PerAttemptTimeoutSeconds));
+
 		try {
-			return await notifier.SendAsync(item.Config, item.Notification, cancellationToken).ConfigureAwait(false);
+			return await notifier.SendAsync(item.Config, item.Notification, attempt.Token).ConfigureAwait(false) ? SendOutcome.Delivered : SendOutcome.Failed;
 		} catch (OperationCanceledException) {
-			return false;
+			return SendOutcome.TimedOut;
 		} catch (Exception e) {
 			ASF.ArchiLogger.LogGenericWarningException(e);
 
-			return false;
+			return SendOutcome.Failed;
 		}
 	}
 
-	// Read-only check; the timestamp is written after a successful delivery in DispatchAsync.
+	// Read-only; the timestamp is written after a successful delivery in DispatchAsync.
 	private bool IsOnCooldown(NotificationEvent notification, byte cooldownMinutes) {
 		if (cooldownMinutes == 0) {
 			return false;
 		}
 
 		return LastSent.TryGetValue((notification.BotName, notification.Type), out DateTime last) && (DateTime.UtcNow - last < TimeSpan.FromMinutes(cooldownMinutes));
+	}
+
+	private enum SendOutcome : byte {
+		Delivered,
+		Failed,
+		TimedOut
 	}
 
 	private sealed record QueueItem(NotificationEvent Notification, PluginConfig Config);

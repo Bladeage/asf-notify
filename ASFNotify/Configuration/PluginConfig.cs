@@ -63,44 +63,62 @@ internal sealed record PluginConfig {
 	internal static PluginConfig FromJson(JsonElement root) {
 		List<string>? events = null;
 
-		if (root.TryGetPropertyCI("Events", out JsonElement eventsElement) && (eventsElement.ValueKind == JsonValueKind.Array)) {
-			events = [];
+		if (root.TryGetPropertyCI("Events", out JsonElement eventsElement)) {
+			if (eventsElement.ValueKind == JsonValueKind.Array) {
+				events = [];
 
-			foreach (JsonElement item in eventsElement.EnumerateArray()) {
-				if (item.ValueKind == JsonValueKind.String) {
+				foreach (JsonElement item in eventsElement.EnumerateArray()) {
+					if (item.ValueKind != JsonValueKind.String) {
+						ASF.ArchiLogger.LogGenericWarning("[ASFNotify] Ignoring a non-string entry in \"Events\".");
+
+						continue;
+					}
+
 					string? name = item.GetString();
 
-					if (!string.IsNullOrEmpty(name)) {
-						events.Add(name);
+					if (string.IsNullOrEmpty(name)) {
+						continue;
+					}
 
-						if (!Enum.TryParse(name, true, out EEventType parsed) || !Enum.IsDefined(parsed)) {
-							ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] Ignoring unknown event name in \"Events\": {name}");
-						}
+					events.Add(name);
+
+					if (!Enum.TryParse(name, true, out EEventType parsed) || !Enum.IsDefined(parsed)) {
+						ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] Ignoring unknown event name in \"Events\": {name}");
 					}
 				}
+			} else if (eventsElement.ValueKind != JsonValueKind.Null) {
+				ASF.ArchiLogger.LogGenericWarning("[ASFNotify] \"Events\" must be an array of event names; ignoring it (default events apply).");
 			}
 		}
 
 		Dictionary<string, string>? templates = null;
 
-		if (root.TryGetPropertyCI("Templates", out JsonElement templatesElement) && (templatesElement.ValueKind == JsonValueKind.Object)) {
-			templates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		if (root.TryGetPropertyCI("Templates", out JsonElement templatesElement)) {
+			if (templatesElement.ValueKind == JsonValueKind.Object) {
+				templates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-			foreach (JsonProperty property in templatesElement.EnumerateObject()) {
-				if (property.Value.ValueKind == JsonValueKind.String) {
+				foreach (JsonProperty property in templatesElement.EnumerateObject()) {
+					if (property.Value.ValueKind != JsonValueKind.String) {
+						ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] Ignoring non-string template for event: {property.Name}");
+
+						continue;
+					}
+
 					templates[property.Name] = property.Value.GetString() ?? string.Empty;
 
 					if (!Enum.TryParse(property.Name, true, out EEventType parsed) || !Enum.IsDefined(parsed)) {
 						ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] Ignoring template for unknown event: {property.Name}");
 					}
 				}
+			} else if (templatesElement.ValueKind != JsonValueKind.Null) {
+				ASF.ArchiLogger.LogGenericWarning("[ASFNotify] \"Templates\" must be an object keyed by event name; ignoring it.");
 			}
 		}
 
 		byte? cooldownMinutes = root.GetByteOrNull("CooldownMinutes");
 
 		if ((cooldownMinutes == null) && root.TryGetPropertyCI("CooldownMinutes", out JsonElement cooldownElement) && (cooldownElement.ValueKind != JsonValueKind.Null)) {
-			ASF.ArchiLogger.LogGenericWarning("[ASFNotify] CooldownMinutes must be a whole number 0-255; using the default.");
+			ASF.ArchiLogger.LogGenericWarning("[ASFNotify] CooldownMinutes must be a whole number 0-255; the value will be ignored.");
 		}
 
 		return new PluginConfig {

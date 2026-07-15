@@ -14,9 +14,10 @@ internal sealed class GotifyNotifier : INotifier {
 	public Task<bool> SendAsync(PluginConfig config, NotificationEvent notification, CancellationToken cancellationToken = default) {
 		GotifyConfig gotify = config.Gotify!;
 
-		// Append the path segment explicitly; new Uri(base, "message") would drop a trailing base segment
-		// when the base has no trailing slash (breaks reverse-proxy subpaths like https://host/gotify).
-		Uri endpoint = new($"{gotify.Url!.AbsoluteUri.TrimEnd('/')}/message");
+		// Append "message" to the path only. Using GetLeftPart(Path) preserves a reverse-proxy subpath
+		// (https://host/gotify) while dropping any query/fragment, which new Uri(base, "message") or
+		// AbsoluteUri would mishandle.
+		Uri endpoint = new($"{gotify.Url!.GetLeftPart(UriPartial.Path).TrimEnd('/')}/message");
 		UriBuilder builder = new(endpoint) { Query = $"token={Uri.EscapeDataString(gotify.Token!)}" };
 
 		return NotifierHttp.PostJsonAsync(
