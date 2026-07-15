@@ -17,6 +17,7 @@ internal sealed record PluginConfig {
 		EEventType.FarmingFinished,
 		EEventType.GiftReceived,
 		EEventType.AccountAlert,
+		EEventType.AsfStarted,
 		EEventType.AsfUpdated,
 		EEventType.PluginUpdated
 	];

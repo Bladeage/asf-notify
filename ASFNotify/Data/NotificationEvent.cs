@@ -15,6 +15,7 @@ internal enum EEventType : byte {
 	AccountAlert,
 	BotAdded,
 	BotRemoved,
+	AsfStarted,
 	AsfUpdated,
 	PluginUpdated
 }

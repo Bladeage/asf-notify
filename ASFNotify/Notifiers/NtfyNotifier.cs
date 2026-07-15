@@ -62,6 +62,7 @@ internal sealed class NtfyNotifier : INotifier {
 		EEventType.AccountAlert => "rotating_light",
 		EEventType.BotAdded => "heavy_plus_sign",
 		EEventType.BotRemoved => "heavy_minus_sign",
+		EEventType.AsfStarted => "rocket",
 		EEventType.AsfUpdated => "arrow_up",
 		EEventType.PluginUpdated => "arrow_up",
 		_ => "bell"

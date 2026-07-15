@@ -93,14 +93,17 @@ Each event is toggled through the `Events` config list. The default set is the l
 | `BotAdded` | off | Low | A new bot is created. The startup burst (every bot on each ASF start) is suppressed, so only genuine later additions notify. Gated by the global config, since per-bot config isn't loaded yet at this point. |
 | `BotRemoved` | off | Low | A bot's config is deleted or renamed. Does not fire on shutdown. |
 
-**ASF maintenance** (server-scoped: no specific bot, labelled `ASF`, gated by the global config only, and sent synchronously right before ASF restarts)
+**ASF maintenance** (server-scoped: no specific bot, labelled `ASF`, gated by the global config only)
 
 | Event | Default | Prio | Fires when |
 |-------|:-------:|:----:|-------------|
+| `AsfStarted` | on | Normal | ArchiSteamFarm finished starting up. Fires once per launch, so you know the process is back. |
 | `AsfUpdated` | on | High | ASF finished self-updating (old to new version) and is about to restart. Explains the reconnect wave that follows. |
 | `PluginUpdated` | on | Normal | ASF finished updating ASFNotify itself and is restarting to apply it. |
 
-So the default set is: `Disconnected`, `LoginAttention`, `FarmingFinished`, `AccountAlert`, `GiftReceived`, `AsfUpdated`, `PluginUpdated`. Override it with your own `Events` list (see [Configuration](#configuration)).
+The two update events are sent synchronously right before ASF restarts, so they go out before the process exits.
+
+So the default set is: `Disconnected`, `LoginAttention`, `FarmingFinished`, `AccountAlert`, `GiftReceived`, `AsfStarted`, `AsfUpdated`, `PluginUpdated`. Override it with your own `Events` list (see [Configuration](#configuration)).
 
 ## How it works
 
@@ -130,8 +133,8 @@ A few things worth knowing:
 3. Add an [`ASFNotify` config block](#configuration) to your `ASF.json` and/or a bot config.
 4. Restart ASF. On startup you should see something like:
    ```
-   InitPlugins() Loading ASFNotify V1.1.0.0...
-   [ASFNotify] v1.1.0.0 loaded.
+   InitPlugins() Loading ASFNotify V1.2.0.0...
+   [ASFNotify] v1.2.0.0 loaded.
    [ASFNotify] Active backends: … . Reported events: … .
    ```
 
@@ -191,7 +194,7 @@ ASFNotify reads a single object under the top-level `ASFNotify` key. Put it in `
 | `Gotify.Token` | string | — | Gotify application token. Active when both `Url` and `Token` are set. Never logged. |
 | `Apprise.Url` | string (URL) | — | apprise-api notify endpoint, e.g. `http://host:8000/notify/<key>`. Active when set. |
 | `Apprise.Tags` | string | — | Optional comma-separated Apprise tag filter. |
-| `Events` | string[] | *(see [Reported events](#reported-events))* | Which events to report. Valid names: `Disconnected`, `LoginAttention`, `LoggedOn`, `FarmingStarted`, `FarmingFinished`, `FarmingStopped`, `TradeOffer`, `TradeAccepted`, `TradeRefused`, `AccountAlert`, `GiftReceived`, `BotAdded`, `BotRemoved`, `AsfUpdated`, `PluginUpdated`. Case-insensitive; unknown names are ignored. |
+| `Events` | string[] | *(see [Reported events](#reported-events))* | Which events to report. Valid names: `Disconnected`, `LoginAttention`, `LoggedOn`, `FarmingStarted`, `FarmingFinished`, `FarmingStopped`, `TradeOffer`, `TradeAccepted`, `TradeRefused`, `AccountAlert`, `GiftReceived`, `BotAdded`, `BotRemoved`, `AsfStarted`, `AsfUpdated`, `PluginUpdated`. Case-insensitive; unknown names are ignored. |
 | `CooldownMinutes` | number (0–255) | `5` | Minimum minutes between two notifications for the same bot and event. `0` disables it. |
 | `Templates` | object | — | Per-event message overrides, keyed by event name. See [templating](#message-templating). |
 
@@ -254,6 +257,7 @@ Each event also gets a fitting ntfy tag (emoji) and Apprise type:
 | `GiftReceived` | Normal | `gift` | `success` |
 | `BotAdded` | Low | `heavy_plus_sign` | `success` |
 | `BotRemoved` | Low | `heavy_minus_sign` | `warning` |
+| `AsfStarted` | Normal | `rocket` | `success` |
 | `PluginUpdated` | Normal | `arrow_up` | `info` |
 
 ## Backend setup guides

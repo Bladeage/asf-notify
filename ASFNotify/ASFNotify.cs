@@ -66,6 +66,13 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 
 		if (GlobalConfig is { HasAnyBackend: true }) {
 			ASF.ArchiLogger.LogGenericInfo($"[ASFNotify] Active backends: {DescribeBackends(GlobalConfig)}. Reported events: {string.Join(", ", GlobalConfig.EffectiveEvents)}.");
+
+			if (GlobalConfig.EffectiveEvents.Contains(EEventType.AsfStarted)) {
+				// WebBrowser is already up by the time OnASFInit runs, so queue it like any other event.
+				string? asfVersion = typeof(ASF).Assembly.GetName().Version?.ToString();
+				string message = string.IsNullOrEmpty(asfVersion) ? "ArchiSteamFarm started." : $"ArchiSteamFarm v{asfVersion} started.";
+				Dispatcher.Enqueue(new NotificationEvent(ServerLabel, EEventType.AsfStarted, "🟢 ASF started", message, ENotificationPriority.Normal), GlobalConfig);
+			}
 		} else {
 			ASF.ArchiLogger.LogGenericInfo("[ASFNotify] No global backend configured. Add the \"ASFNotify\" key to ASF.json (or a bot's config), then reload the config.");
 		}

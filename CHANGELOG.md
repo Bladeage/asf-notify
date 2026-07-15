@@ -3,6 +3,12 @@
 All notable changes to ASFNotify are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); the version numbers match the plugin's assembly version.
 
+## [1.2.0.0] – 2026-07-15
+
+### Added
+- `AsfStarted` event: a notification when ArchiSteamFarm has started up (fires once per launch, from
+  `OnASFInit`). Server-scoped like the update events, and on by default.
+
 ## [1.1.0.0] – 2026-07-14
 
 ### Added
@@ -40,4 +46,5 @@ Built against ArchiSteamFarm V6.3.7.0 (.NET 10); verified live on ASF V6.3.8.0.
 - `IGitHubPluginUpdates` for ASF-native plugin updates.
 - Trimmed-runtime-safe config parsing (`JsonElement`) and payload building (`Utf8JsonWriter`).
 
+[1.2.0.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.2.0.0
 [1.1.0.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.1.0.0
