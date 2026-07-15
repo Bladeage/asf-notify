@@ -360,8 +360,6 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 		}
 	}
 
-	// Returns true if this event is configured for delivery (a backend is set and the event is enabled).
-	// The notification may still be cooldown-suppressed or dropped downstream.
 	// At most one report per bot per local day, so a bot stuck behind Steam's login throttle stays a single
 	// notification instead of one every retry. The next day is allowed to report again.
 	private void ReportRateLimited(Bot bot, EResult reason) {
@@ -391,6 +389,8 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 		}
 	}
 
+	// Returns true if this event is configured for delivery (a backend is set and the event is enabled).
+	// The notification may still be cooldown-suppressed or dropped downstream.
 	private bool Report(Bot bot, EEventType type, ENotificationPriority priority, string defaultMessage, string? reason = null, bool? farmedSomething = null) {
 		NotificationDispatcher? dispatcher = Dispatcher;
 
