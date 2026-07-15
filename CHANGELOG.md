@@ -3,6 +3,16 @@
 All notable changes to ASFNotify are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); the version numbers match the plugin's assembly version.
 
+## [1.3.3.0] – 2026-07-15
+
+### Fixed
+- `GameRedeemed` no longer misreports free packages as gifts. Free-package grants and Steam gifts both
+  arrive as "complimentary" licenses, which the previous `!= None` filter let through and labelled
+  "via a gift". `GameRedeemed` now fires only for actual key redemptions (`ActivationCode`) — background
+  redeeming and keys forwarded between bots — and genuine gifts remain covered by the `GiftReceived`
+  event. The message now reads "Bot X redeemed …". Added a debug log of each new package's payment
+  method to make this diagnosable.
+
 ## [1.3.2.0] – 2026-07-15
 
 Fixes regressions a re-review found in the 1.3.1 hardening.
@@ -101,6 +111,7 @@ Never released on its own; the first public release was 1.1.0.0. Listed here for
 - `IGitHubPluginUpdates` for ASF-native plugin updates.
 - Trimmed-runtime-safe config parsing (`JsonElement`) and payload building (`Utf8JsonWriter`).
 
+[1.3.3.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.3.0
 [1.3.2.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.2.0
 [1.3.1.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.1.0
 [1.3.0.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.0.0

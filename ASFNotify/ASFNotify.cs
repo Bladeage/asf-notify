@@ -266,6 +266,9 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 
 		// The first callback (initial license list at login) is only the baseline.
 		if (!hadBaseline) {
+			// One-time diagnostic (visible at ASF's Debug log level): payment-method breakdown of the account.
+			ASF.ArchiLogger.LogGenericDebug($"[ASFNotify] {bot.BotName}: license payment methods — {string.Join(", ", current.Values.GroupBy(static method => method).Select(static group => $"{group.Key}={group.Count()}"))}");
+
 			return;
 		}
 
@@ -276,28 +279,35 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 			return;
 		}
 
-		// New packages acquired since the baseline, excluding free grants (PaymentMethod None) so the
-		// FreePackages plugin's constant activity doesn't flood this event.
-		List<KeyValuePair<uint, EPaymentMethod>> redeemed = current.Where(entry => !known!.Contains(entry.Key) && (entry.Value != EPaymentMethod.None)).ToList();
+		// Packages newly added since the baseline.
+		List<uint> newPackages = current.Keys.Where(id => !known!.Contains(id)).ToList();
+
+		if (newPackages.Count == 0) {
+			return;
+		}
+
+		// Diagnostic (Debug level): payment-method breakdown of the newly added packages.
+		ASF.ArchiLogger.LogGenericDebug($"[ASFNotify] {bot.BotName}: {newPackages.Count} new package(s) — {string.Join(", ", newPackages.GroupBy(id => current[id]).Select(group => $"{group.Key}={group.Count()}"))}");
+
+		// Only genuine key redemptions — background redeeming and keys forwarded between bots — which arrive
+		// as ActivationCode. Free-package grants and Steam gifts both arrive as Complimentary and are excluded
+		// here (they're indistinguishable, and real gifts are covered by the separate GiftReceived event).
+		List<uint> redeemed = newPackages.Where(id => current[id] == EPaymentMethod.ActivationCode).ToList();
 
 		if (redeemed.Count > 0) {
 			_ = ReportRedeemedAsync(bot, redeemed);
 		}
 	}
 
-	private async Task ReportRedeemedAsync(Bot bot, List<KeyValuePair<uint, EPaymentMethod>> redeemed) {
+	private async Task ReportRedeemedAsync(Bot bot, List<uint> packageIDs) {
 		try {
-			string suffix = SourceSuffix(redeemed);
-
 			// A very large batch is aggregated without per-title PICS lookups (avoids a big lookup burst
 			// and an unwieldy message) while still telling the user something happened.
-			if (redeemed.Count > MaxRedeemBatch) {
-				Report(bot, EEventType.GameRedeemed, ENotificationPriority.Normal, $"Bot {bot.BotName} added {redeemed.Count} new licenses{suffix}.");
+			if (packageIDs.Count > MaxRedeemBatch) {
+				Report(bot, EEventType.GameRedeemed, ENotificationPriority.Normal, $"Bot {bot.BotName} redeemed {packageIDs.Count} new licenses.");
 
 				return;
 			}
-
-			List<uint> packageIDs = redeemed.Select(static entry => entry.Key).ToList();
 
 			IReadOnlyList<string> names = await GameNameResolver.ResolveAsync(bot, packageIDs).ConfigureAwait(false);
 
@@ -305,25 +315,10 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 				? string.Join(", ", names)
 				: packageIDs.Count == 1 ? $"a new license (package {packageIDs[0]})" : $"{packageIDs.Count} new licenses ({string.Join(", ", packageIDs)})";
 
-			Report(bot, EEventType.GameRedeemed, ENotificationPriority.Normal, $"Bot {bot.BotName} added {what}{suffix}.");
+			Report(bot, EEventType.GameRedeemed, ENotificationPriority.Normal, $"Bot {bot.BotName} redeemed {what}.");
 		} catch (Exception e) {
 			ASF.ArchiLogger.LogGenericWarningException(e);
 		}
-	}
-
-	// Labels the source only when every redeemed package shares one payment method.
-	private static string SourceSuffix(List<KeyValuePair<uint, EPaymentMethod>> redeemed) {
-		EPaymentMethod method = redeemed[0].Value;
-
-		if (redeemed.Any(entry => entry.Value != method)) {
-			return "";
-		}
-
-		return method switch {
-			EPaymentMethod.ActivationCode => " via a key",
-			EPaymentMethod.Complimentary => " via a gift",
-			_ => ""
-		};
 	}
 
 	public Task OnUpdateProceeding(Version currentVersion, Version newVersion) => Task.CompletedTask;
