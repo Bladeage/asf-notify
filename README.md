@@ -60,7 +60,7 @@ Each event is toggled through the `Events` config list. The default set is the l
 | Event | Default | Prio | Fires when |
 |-------|:-------:|:----:|-------------|
 | `Disconnected` | on | High | A bot is disconnected from Steam involuntarily. Voluntary/ASF-initiated disconnects (`!stop`, shutdown, reconnect, i.e. `EResult.OK`) are ignored. Includes the Steam `EResult` reason. |
-| `LoginAttention` | on | High | A disconnect whose reason means the bot needs you: bad password, 2FA/Steam Guard, ban, rate-limit, etc. When enabled it replaces `Disconnected` for those reasons so you don't get two pushes. |
+| `LoginAttention` | on | High | A disconnect whose reason means the bot needs you: bad password, 2FA/Steam Guard, ban, etc. When enabled it replaces `Disconnected` for those reasons so you don't get two pushes. Steam login throttling (`RateLimitExceeded`) also reports here, but only once per bot per day — see below. |
 | `LoggedOn` | off | Low | A bot logs on. Off by default, since Steam reconnects several times a day. |
 
 **Farming**
@@ -370,7 +370,7 @@ The `DebugFast` config skips analyzers for fast iteration; `Release` runs the fu
 
 ## Known limitations
 
-- Steam Guard / 2FA prompts aren't reported directly. ASF has no plugin callback for an "input needed" state. `LoginAttention` is the closest proxy: it classifies auth-related disconnect reasons (bad password, 2FA, ban, rate-limit) and flags them high-priority. It can't catch a prompt that isn't preceded by such a disconnect.
+- Steam Guard / 2FA prompts aren't reported directly. ASF has no plugin callback for an "input needed" state. `LoginAttention` is the closest proxy: it classifies auth-related disconnect reasons (bad password, 2FA, ban) and flags them high-priority. It can't catch a prompt that isn't preceded by such a disconnect.
 - Steam user-notification events carry no detail. `GiftReceived` and `AccountAlert` come from Steam's notification feed, which only signals that a notification of that type appeared, not what it is.
 - `GameRedeemed` name resolution is best-effort. The Steam license list only carries package IDs; the game name is looked up via PICS and may occasionally fall back to the package ID (e.g. if PICS doesn't respond). Free-package grants and gifts (both "complimentary" licenses) are excluded by payment method, so it targets actual key redemptions; genuine gifts are reported by `GiftReceived`.
 - Card-drop progress, per-license changes, mobile-confirmation prompts and an ASF-process-down alert aren't available, because ASF has no plugin callback for them. A dead process can't push its own alert either; use an external heartbeat for that.
@@ -411,7 +411,10 @@ Yes, with the `Templates` map and the `{Bot}`, `{SteamID}`, `{Reason}` and `{Far
 `FarmingFinished` fires when a bot completes its farming cycle (nothing left to farm). `FarmingStopped` fires when farming is interrupted, e.g. the account starts playing a game or you pause it. The latter is noisier, so it's off by default.
 
 **What is `LoginAttention` and how is it different from `Disconnected`?**
-`LoginAttention` is a higher-signal `Disconnected`: it only fires when the disconnect reason means the bot actually needs you (wrong password, 2FA, ban, rate-limit, access denied). When enabled it reports those specific disconnects as `LoginAttention` instead of `Disconnected`, so you don't get two pushes. If it's disabled, those cases fall back to a plain `Disconnected`.
+`LoginAttention` is a higher-signal `Disconnected`: it only fires when the disconnect reason means the bot actually needs you (wrong password, 2FA, ban, access denied). When enabled it reports those specific disconnects as `LoginAttention` instead of `Disconnected`, so you don't get two pushes. If it's disabled, those cases fall back to a plain `Disconnected`.
+
+**Why do I only get one push a day when a bot is rate limited?**
+When Steam throttles a bot's logins (`RateLimitExceeded`), ASF retries by itself every few minutes and the throttle can last for hours, which would otherwise mean a push per retry all day. That case is reported once per bot per local day, and again the next day if the bot is still stuck. Nothing about it needs you to act, so a single reminder that the bot isn't farming is the point.
 
 **Does ASFNotify accept or decline trades / friend requests?**
 No, it only watches. The trade and friend-request hooks always return "not handled", so ASF's own behaviour is never changed.

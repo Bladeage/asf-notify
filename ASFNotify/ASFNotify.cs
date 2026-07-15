@@ -33,7 +33,7 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 
 	private static readonly ImmutableArray<INotifier> Notifiers = [new NtfyNotifier(), new GotifyNotifier(), new AppriseNotifier()];
 
-	// Disconnect reasons that mean a bot needs a human (bad credentials, 2FA, bans, throttling).
+	// Disconnect reasons that mean a bot needs a human (bad credentials, 2FA, bans).
 	private static readonly HashSet<EResult> AuthFailureResults = [
 		EResult.InvalidPassword,
 		EResult.AccountLogonDenied,
@@ -44,14 +44,16 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 		EResult.Suspended,
 		EResult.Revoked,
 		EResult.Expired,
-		EResult.AccessDenied,
-		EResult.RateLimitExceeded
+		EResult.AccessDenied
 	];
 
 	private readonly ConcurrentDictionary<string, PluginConfig> BotConfigs = new(StringComparer.OrdinalIgnoreCase);
 
 	// Per-bot set of owned package IDs, to detect newly added licenses (GameRedeemed).
 	private readonly ConcurrentDictionary<string, ImmutableHashSet<uint>> KnownPackages = new(StringComparer.OrdinalIgnoreCase);
+
+	// Local calendar day on which a bot last reported a Steam login throttle, to keep it to one a day.
+	private readonly ConcurrentDictionary<string, DateOnly> RateLimitReportedOn = new(StringComparer.OrdinalIgnoreCase);
 
 	// Used to ignore the OnBotInit burst that fires for every existing bot at startup.
 	private readonly DateTime StartupUtc = DateTime.UtcNow;
@@ -142,6 +144,14 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 
 		// EResult.OK means ASF disconnected on purpose (shutdown, command, reconnect).
 		if (reason == EResult.OK) {
+			return Task.CompletedTask;
+		}
+
+		// Steam throttles logins for hours at a time while ASF quietly retries every few minutes, so one
+		// incident would otherwise report all day. Nothing here needs a human, it just needs to be known.
+		if (reason == EResult.RateLimitExceeded) {
+			ReportRateLimited(bot, reason);
+
 			return Task.CompletedTask;
 		}
 
@@ -352,6 +362,35 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 
 	// Returns true if this event is configured for delivery (a backend is set and the event is enabled).
 	// The notification may still be cooldown-suppressed or dropped downstream.
+	// At most one report per bot per local day, so a bot stuck behind Steam's login throttle stays a single
+	// notification instead of one every retry. The next day is allowed to report again.
+	private void ReportRateLimited(Bot bot, EResult reason) {
+		DateOnly today = DateOnly.FromDateTime(DateTime.Now);
+
+		while (true) {
+			if (RateLimitReportedOn.TryGetValue(bot.BotName, out DateOnly last)) {
+				if (last == today) {
+					return;
+				}
+
+				if (!RateLimitReportedOn.TryUpdate(bot.BotName, today, last)) {
+					continue;
+				}
+			} else if (!RateLimitReportedOn.TryAdd(bot.BotName, today)) {
+				continue;
+			}
+
+			break;
+		}
+
+		string message = $"Bot {bot.BotName} cannot log in, Steam is rate limiting it. ASF keeps retrying on its own, and this is reported once a day.";
+
+		// Fall back to Disconnected for setups that only enabled that one.
+		if (!Report(bot, EEventType.LoginAttention, ENotificationPriority.High, message, reason: reason.ToString())) {
+			Report(bot, EEventType.Disconnected, ENotificationPriority.High, message, reason: reason.ToString());
+		}
+	}
+
 	private bool Report(Bot bot, EEventType type, ENotificationPriority priority, string defaultMessage, string? reason = null, bool? farmedSomething = null) {
 		NotificationDispatcher? dispatcher = Dispatcher;
 

@@ -3,6 +3,16 @@
 All notable changes to ASFNotify are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); the version numbers match the plugin's assembly version.
 
+## [1.3.4.0] – 2026-07-15
+
+### Fixed
+- A bot stuck behind Steam's login throttle no longer pushes all day. `RateLimitExceeded` was treated as
+  an auth failure, so every one of ASF's automatic retries sent a high-priority "needs attention" push —
+  roughly one every 25 minutes for as long as Steam kept throttling, which can be hours. It is now
+  reported once per bot per day (and again the next day if the bot is still stuck), and the message says
+  what is actually happening: ASF keeps retrying on its own, nothing needs doing. The per-event cooldown
+  never helped here, because the retries are further apart than the cooldown.
+
 ## [1.3.3.0] – 2026-07-15
 
 ### Fixed
