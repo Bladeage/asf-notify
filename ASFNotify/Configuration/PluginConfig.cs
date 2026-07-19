@@ -11,11 +11,13 @@ namespace ASFNotify.Configuration;
 internal sealed record PluginConfig {
 	internal const byte DefaultCooldownMinutes = 5;
 
-	// Low-noise defaults when "Events" is omitted; everything else is opt-in.
+	// Low-noise defaults when "Events" is omitted; everything else is opt-in. The rule: actionable
+	// alerts and rare lifecycle events are on, per-game/status chatter is opt-in.
 	internal static readonly ImmutableHashSet<EEventType> DefaultEvents = [
 		EEventType.Disconnected,
 		EEventType.LoginAttention,
 		EEventType.FarmingFinished,
+		EEventType.TradeOffer,
 		EEventType.GiftReceived,
 		EEventType.AccountAlert,
 		EEventType.AsfStarted,
@@ -35,7 +37,9 @@ internal sealed record PluginConfig {
 
 	internal NtfyConfig? Ntfy { get; init; }
 
-	// Optional per-event message overrides. Placeholders: {Bot}, {SteamID}, {Reason}, {FarmedSomething}.
+	// Optional per-event message overrides. Placeholders: {Bot}, {SteamID}, {Reason}, plus per-event
+	// extras like {Game}, {CardsRemaining}, {QueueCount}, {Count}, {Cards}, {Hours}, {TotalGames},
+	// {TotalCards}, {TimeRemaining} (see README). {FarmedSomething} is deprecated (always "True").
 	internal IReadOnlyDictionary<string, string>? Templates { get; init; }
 
 	internal byte EffectiveCooldownMinutes => CooldownMinutes ?? DefaultCooldownMinutes;
@@ -80,6 +84,17 @@ internal sealed record PluginConfig {
 						continue;
 					}
 
+					// FarmingStarted was split into GameFarmingStarted + MassFarmingStarted in 1.4.0; keep old
+					// configs working for a while.
+					if (name.Equals("FarmingStarted", StringComparison.OrdinalIgnoreCase)) {
+						ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] \"FarmingStarted\" was replaced by \"{EEventType.GameFarmingStarted}\" and \"{EEventType.MassFarmingStarted}\"; enabling both. Please update your config, this mapping will be removed in a future release.");
+
+						events.Add(nameof(EEventType.GameFarmingStarted));
+						events.Add(nameof(EEventType.MassFarmingStarted));
+
+						continue;
+					}
+
 					events.Add(name);
 
 					if (!Enum.TryParse(name, true, out EEventType parsed) || !Enum.IsDefined(parsed)) {
@@ -104,7 +119,18 @@ internal sealed record PluginConfig {
 						continue;
 					}
 
-					templates[property.Name] = property.Value.GetString() ?? string.Empty;
+					string value = property.Value.GetString() ?? string.Empty;
+
+					// Same 1.4.0 compat mapping as in "Events": an old FarmingStarted template applies to
+					// both replacement events unless they have templates of their own.
+					if (property.Name.Equals("FarmingStarted", StringComparison.OrdinalIgnoreCase)) {
+						templates.TryAdd(nameof(EEventType.GameFarmingStarted), value);
+						templates.TryAdd(nameof(EEventType.MassFarmingStarted), value);
+
+						continue;
+					}
+
+					templates[property.Name] = value;
 
 					if (!Enum.TryParse(property.Name, true, out EEventType parsed) || !Enum.IsDefined(parsed)) {
 						ASF.ArchiLogger.LogGenericWarning($"[ASFNotify] Ignoring template for unknown event: {property.Name}");

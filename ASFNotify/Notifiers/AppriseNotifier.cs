@@ -32,7 +32,9 @@ internal sealed class AppriseNotifier : INotifier {
 	// Apprise type drives the message colour/icon.
 	private static string MapType(EEventType type) => type switch {
 		EEventType.LoggedOn => "success",
-		EEventType.FarmingStarted => "info",
+		EEventType.GameFarmingStarted => "info",
+		EEventType.GameFarmingFinished => "success",
+		EEventType.MassFarmingStarted => "info",
 		EEventType.FarmingFinished => "success",
 		EEventType.TradeAccepted => "success",
 		EEventType.GiftReceived => "success",

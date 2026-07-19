@@ -5,7 +5,9 @@ internal enum EEventType : byte {
 	LoggedOn,
 	LoginAttention,
 	Disconnected,
-	FarmingStarted,
+	GameFarmingStarted,
+	GameFarmingFinished,
+	MassFarmingStarted,
 	FarmingFinished,
 	FarmingStopped,
 	TradeOffer,
@@ -27,5 +29,7 @@ internal enum ENotificationPriority : byte {
 	High
 }
 
-// BotName is a synthetic label ("ASF") for server-scoped events that carry no bot.
-internal sealed record NotificationEvent(string BotName, EEventType Type, string Title, string Message, ENotificationPriority Priority);
+// BotName is a synthetic label ("ASF") for server-scoped events that carry no bot. BypassCooldown is
+// for events that deduplicate themselves (per-game farming events announce each game once per session
+// and aggregate); the generic per-(bot,event) cooldown would silently drop distinct games otherwise.
+internal sealed record NotificationEvent(string BotName, EEventType Type, string Title, string Message, ENotificationPriority Priority, bool BypassCooldown = false);

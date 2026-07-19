@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using ASFNotify.Configuration;
@@ -18,16 +19,17 @@ internal sealed class GotifyNotifier : INotifier {
 		// (https://host/gotify) while dropping any query/fragment, which new Uri(base, "message") or
 		// AbsoluteUri would mishandle.
 		Uri endpoint = new($"{gotify.Url!.GetLeftPart(UriPartial.Path).TrimEnd('/')}/message");
-		UriBuilder builder = new(endpoint) { Query = $"token={Uri.EscapeDataString(gotify.Token!)}" };
 
+		// The token goes into a header rather than the URL, where it would end up in ASF's Debug-level
+		// HTTP traces and any proxy logs along the way.
 		return NotifierHttp.PostJsonAsync(
-			builder.Uri,
+			endpoint,
 			writer => {
 				writer.WriteString("title", notification.Title);
 				writer.WriteString("message", notification.Message);
 				writer.WriteNumber("priority", MapPriority(notification.Priority));
 			},
-			null,
+			[new KeyValuePair<string, string>("X-Gotify-Key", gotify.Token!)],
 			cancellationToken
 		);
 	}

@@ -59,32 +59,34 @@ Each event is toggled through the `Events` config list. The default set is the l
 
 | Event | Default | Prio | Fires when |
 |-------|:-------:|:----:|-------------|
-| `Disconnected` | on | High | A bot is disconnected from Steam involuntarily. Voluntary/ASF-initiated disconnects (`!stop`, shutdown, reconnect, i.e. `EResult.OK`) are ignored. Includes the Steam `EResult` reason. |
-| `LoginAttention` | on | High | A disconnect whose reason means the bot needs you: bad password, 2FA/Steam Guard, ban, etc. When enabled it replaces `Disconnected` for those reasons so you don't get two pushes. Steam login throttling (`RateLimitExceeded`) also reports here, but only once per bot per day — see below. |
-| `LoggedOn` | off | Low | A bot logs on. Off by default, since Steam reconnects several times a day. |
+| `Disconnected` | on | High | A bot is disconnected from Steam involuntarily *and is still offline two minutes later*. Short blips (the daily Steam disconnect, maintenance flaps) heal themselves and stay silent. Voluntary/ASF-initiated disconnects (`!stop`, shutdown, reconnect, i.e. `EResult.OK`) are ignored. Includes the Steam `EResult` reason. |
+| `LoginAttention` | on | High | The bot needs you. Hard account states (ban, lock, suspension) report immediately; transient auth failures (bad password, 2FA mismatch) only after striking twice in a row without a successful login in between, because Steam also returns those during hiccups it recovers from on its own. When enabled it replaces `Disconnected` for those reasons so you don't get two pushes. Steam login throttling (`RateLimitExceeded`) also reports here, but only once per bot per day — see below. |
+| `LoggedOn` | off | Low | A bot comes *back* online after an incident that was actually reported (`Disconnected` or `LoginAttention`). It closes the loop instead of narrating every routine reconnect. |
 
 **Farming**
 
 | Event | Default | Prio | Fires when |
 |-------|:-------:|:----:|-------------|
-| `FarmingFinished` | on | Normal | A bot finishes its card-farming cycle, whether or not it farmed anything. |
-| `FarmingStarted` | off | Low | A bot starts or resumes farming. Chatty across many bots. |
-| `FarmingStopped` | off | Low | Farming is stopped or interrupted (the account starts a game, or you pause it). |
+| `FarmingFinished` | on | Normal | A bot completes a real farming session — it actually farmed cards and nothing is left. Includes a session summary (games and cards farmed). It does *not* fire when a bot merely checks its badges and finds nothing to farm (which ASF does at every login and every idle recheck). |
+| `GameFarmingStarted` | off | Low | An individual game starts being farmed, with its name, remaining cards and queue position. Announced once per game per farming session; resuming the same game after a reconnect stays silent. |
+| `GameFarmingFinished` | off | Low | All cards of an individual game have dropped. Several games finishing within the cooldown window are aggregated into one push instead of being dropped. |
+| `MassFarmingStarted` | off | Low | The bot starts idling many games in parallel to reach `HoursUntilCardDrops` (ASF's "complex" algorithm). One summary push per farming session — game count, queue size, estimated time — never one per game. |
+| `FarmingStopped` | off | Low | Farming is genuinely interrupted: a pause, a stop command, or the account being used elsewhere. Internal stop/start cycles, disconnects and the moment right before `FarmingFinished` are filtered out. |
 
-**Trading** (all opt-in; ASFNotify only watches, it never accepts or declines a trade)
+**Trading** (ASFNotify only watches, it never accepts or declines a trade)
 
 | Event | Default | Prio | Fires when |
 |-------|:-------:|:----:|-------------|
-| `TradeOffer` | off | Normal | An incoming trade offer arrives (partner SteamID, item counts, ASF's decision). |
+| `TradeOffer` | on | Normal | An incoming offer that ASF leaves *pending* — one it won't accept or reject on its own, so it needs your review. Offers ASF resolves itself are covered by the two result events below. |
 | `TradeAccepted` | off | Normal | ASF accepted one or more incoming offers. |
-| `TradeRefused` | off | Low | ASF rejected/blacklisted/ignored one or more incoming offers. |
+| `TradeRefused` | off | Low | ASF rejected or blacklisted one or more incoming offers. Offers ASF merely leaves pending count as `TradeOffer`, not as refused. |
 
 **Account & social**
 
 | Event | Default | Prio | Fires when |
 |-------|:-------:|:----:|-------------|
-| `AccountAlert` | on | High | Steam raised an account alert (security/account status) for a bot. Only the fact that an alert exists is available, not its content. |
-| `GiftReceived` | on | Normal | A bot received a Steam gift. |
+| `AccountAlert` | on | High | Steam raised a *new* account alert (security/account status) for a bot. Deduplicated by pending count, so an unread alert isn't re-announced at every login. Only the fact that an alert exists is available, not its content. |
+| `GiftReceived` | on | Normal | A bot received a *new* Steam gift. Deduplicated by pending count: an unclaimed gift no longer re-announces at every login (once per ASF restart at most, as a reminder). |
 | `GameRedeemed` | off | Normal | A bot redeemed a key (including keys forwarded internally between bots). Free-package grants and Steam gifts both arrive as "complimentary" licenses and are excluded here; genuine gifts are covered by `GiftReceived`. The game name is resolved when possible, otherwise the package ID is shown. |
 
 **Bot lifecycle**
@@ -104,7 +106,15 @@ Each event is toggled through the `Events` config list. The default set is the l
 
 The two update events are sent synchronously right before ASF restarts, so they go out before the process exits.
 
-So the default set is: `Disconnected`, `LoginAttention`, `FarmingFinished`, `AccountAlert`, `GiftReceived`, `AsfStarted`, `AsfUpdated`, `PluginUpdated`. Override it with your own `Events` list (see [Configuration](#configuration)).
+So the default set is: `Disconnected`, `LoginAttention`, `FarmingFinished`, `TradeOffer`, `AccountAlert`, `GiftReceived`, `AsfStarted`, `AsfUpdated`, `PluginUpdated`. Override it with your own `Events` list (see [Configuration](#configuration)).
+
+The rule behind the defaults: actionable alerts and rare lifecycle events are on; per-game and status chatter is opt-in. If you *want* the full farming narration, add the three farming events:
+
+```jsonc
+"Events": ["Disconnected", "LoginAttention", "FarmingFinished", "TradeOffer", "AccountAlert", "GiftReceived", "AsfStarted", "AsfUpdated", "PluginUpdated", "GameFarmingStarted", "GameFarmingFinished", "MassFarmingStarted"]
+```
+
+> **Upgrading from 1.3.x?** `FarmingStarted` was split into `GameFarmingStarted` + `MassFarmingStarted`; an old `Events` list containing `FarmingStarted` maps to both for now (with a log notice). `FarmingFinished` no longer fires for "nothing to farm" — that was noise, and there is deliberately no replacement. `TradeOffer` (now pending-offers-only) is the one event newly on by default.
 
 ## How it works
 
@@ -113,6 +123,7 @@ A few things worth knowing:
 - Handlers never block. ASF awaits plugin event handlers, so doing HTTP inside them would hold up your bots. Instead each handler builds a small notification object, drops it into a bounded in-memory queue and returns. One background task drains the queue and does the actual requests. A slow or dead notification server can't slow down or crash your bots.
 - The queue is bounded (64 entries). If a backend is down and the queue fills up, the oldest entries are dropped and logged rather than growing memory forever.
 - Cooldown. Steam drops connections in waves during maintenance, so to avoid a storm of pushes the plugin suppresses repeats of the same `(bot, event)` within a window (default 5 minutes, `CooldownMinutes: 0` turns it off).
+- Noise control beyond the cooldown. Disconnects are debounced (reported only if the bot is still offline after two minutes), transient auth failures need two strikes before `LoginAttention` fires, gift/alert notifications are deduplicated by pending count, and farming events track the actual session so nothing is announced twice. The goal: every push is either actionable or genuinely news.
 - One retry. A failed delivery is retried once, then logged and dropped. Nothing is persisted across ASF restarts; these are notifications, not an audit log.
 - Requests go through ASF's own `WebBrowser`, so they pick up ASF's proxy, TLS and timeout settings. No separate `HttpClient`.
 - Official ASF ships trimmed with reflection-based JSON serialization disabled. So the config is read straight off the JSON DOM (`JsonElement`) and payloads are written with `Utf8JsonWriter`, instead of `JsonSerializer` which isn't available at runtime. Skipping this is a classic way to get a plugin that loads and then throws on first use.
@@ -134,8 +145,8 @@ A few things worth knowing:
 3. Add an [`ASFNotify` config block](#configuration) to your `ASF.json` and/or a bot config.
 4. Restart ASF. On startup you should see something like:
    ```
-   InitPlugins() Loading ASFNotify V1.3.3.0...
-   [ASFNotify] v1.3.3.0 loaded.
+   InitPlugins() Loading ASFNotify V1.4.0.0...
+   [ASFNotify] v1.4.0.0 loaded.
    [ASFNotify] Active backends: … . Reported events: … .
    ```
 
@@ -195,7 +206,7 @@ ASFNotify reads a single object under the top-level `ASFNotify` key. Put it in `
 | `Gotify.Token` | string | — | Gotify application token. Active when both `Url` and `Token` are set. Never logged. |
 | `Apprise.Url` | string (URL) | — | apprise-api notify endpoint, e.g. `http://host:8000/notify/<key>`. Active when set. |
 | `Apprise.Tags` | string | — | Optional comma-separated Apprise tag filter. |
-| `Events` | string[] | *(see [Reported events](#reported-events))* | Which events to report. Valid names: `Disconnected`, `LoginAttention`, `LoggedOn`, `FarmingStarted`, `FarmingFinished`, `FarmingStopped`, `TradeOffer`, `TradeAccepted`, `TradeRefused`, `AccountAlert`, `GiftReceived`, `GameRedeemed`, `BotAdded`, `BotRemoved`, `AsfStarted`, `AsfUpdated`, `PluginUpdated`. Case-insensitive; unknown names are ignored. |
+| `Events` | string[] | *(see [Reported events](#reported-events))* | Which events to report. Valid names: `Disconnected`, `LoginAttention`, `LoggedOn`, `GameFarmingStarted`, `GameFarmingFinished`, `MassFarmingStarted`, `FarmingFinished`, `FarmingStopped`, `TradeOffer`, `TradeAccepted`, `TradeRefused`, `AccountAlert`, `GiftReceived`, `GameRedeemed`, `BotAdded`, `BotRemoved`, `AsfStarted`, `AsfUpdated`, `PluginUpdated`. Case-insensitive; unknown names are ignored (the legacy `FarmingStarted` maps to the two new farming-start events for now). |
 | `CooldownMinutes` | number (0–255) | `5` | Minimum minutes between two notifications for the same bot and event. `0` disables it. |
 | `Templates` | object | — | Per-event message overrides, keyed by event name. See [templating](#message-templating). |
 
@@ -227,8 +238,16 @@ If `Templates` has an entry for an event, its string replaces the default messag
 |-------------|-------|---------------|
 | `{Bot}` | Bot name | all events |
 | `{SteamID}` | Bot's SteamID64 | all events |
-| `{Reason}` | Disconnect reason (`EResult`) | `Disconnected` |
-| `{FarmedSomething}` | `True` / `False` | `FarmingFinished` |
+| `{Reason}` | Disconnect reason (`EResult`) | `Disconnected`, `LoginAttention` |
+| `{Game}` | Game name(s) | `GameFarmingStarted`, `GameFarmingFinished` |
+| `{CardsRemaining}` | Cards left for the game | `GameFarmingStarted` |
+| `{QueueCount}` | Games left in the farming queue | `GameFarmingStarted`, `GameFarmingFinished` |
+| `{Count}` | Games in the batch / games farmed | `MassFarmingStarted`, `FarmingFinished` |
+| `{Cards}` | Cards farmed this session | `FarmingFinished` |
+| `{Hours}` | The `HoursUntilCardDrops` threshold | `MassFarmingStarted` |
+| `{TotalGames}` / `{TotalCards}` | Queue totals at batch start | `MassFarmingStarted` |
+| `{TimeRemaining}` | Estimated time for the queue | `MassFarmingStarted` |
+| `{FarmedSomething}` | Always `True` (deprecated; the event no longer fires otherwise) | `FarmingFinished` |
 
 Only the message body is templated; the title (and its emoji) is generated per event. Server-scoped events (`AsfStarted`, `AsfUpdated`, `PluginUpdated`) use fixed messages and aren't templated.
 
@@ -249,7 +268,9 @@ Each event also gets a fitting ntfy tag (emoji) and Apprise type:
 | `AccountAlert` | High | `rotating_light` | `failure` |
 | `AsfUpdated` | High | `arrow_up` | `info` |
 | `LoggedOn` | Low | `white_check_mark` | `success` |
-| `FarmingStarted` | Low | `seedling` | `info` |
+| `GameFarmingStarted` | Low | `seedling` | `info` |
+| `GameFarmingFinished` | Low | `black_joker` | `success` |
+| `MassFarmingStarted` | Low | `arrow_double_up` | `info` |
 | `FarmingFinished` | Normal | `tada` | `success` |
 | `FarmingStopped` | Low | `octagonal_sign` | `warning` |
 | `TradeOffer` | Normal | `handshake` | `info` |
@@ -372,6 +393,8 @@ The `DebugFast` config skips analyzers for fast iteration; `Release` runs the fu
 
 - Steam Guard / 2FA prompts aren't reported directly. ASF has no plugin callback for an "input needed" state. `LoginAttention` is the closest proxy: it classifies auth-related disconnect reasons (bad password, 2FA, ban) and flags them high-priority. It can't catch a prompt that isn't preceded by such a disconnect.
 - Steam user-notification events carry no detail. `GiftReceived` and `AccountAlert` come from Steam's notification feed, which only signals that a notification of that type appeared, not what it is.
+- The per-game farming events observe ASF's live farming collections through their change event; getting at it requires assuming ASF's concrete collection types (an implementation detail, not a plugin contract). The access is guarded and falls back to 60-second polling if an ASF update ever changes those types — worst case the per-game pushes arrive up to a minute late.
+- Deduplication state (pending gift/alert counts, per-session announced games, incident flags) is in-memory. After an ASF restart a still-unclaimed gift or unread alert is re-announced once — a reminder by design — and the farming session state starts fresh.
 - `GameRedeemed` name resolution is best-effort. The Steam license list only carries package IDs; the game name is looked up via PICS and may occasionally fall back to the package ID (e.g. if PICS doesn't respond). Free-package grants and gifts (both "complimentary" licenses) are excluded by payment method, so it targets actual key redemptions; genuine gifts are reported by `GiftReceived`.
 - Card-drop progress, per-license changes, mobile-confirmation prompts and an ASF-process-down alert aren't available, because ASF has no plugin callback for them. A dead process can't push its own alert either; use an external heartbeat for that.
 - Best-effort, not a guaranteed log. If a backend is unreachable the notification is retried once, then dropped and logged. Nothing survives an ASF restart.
@@ -390,7 +413,7 @@ Yes, through Apprise: run an apprise-api instance, add those service URLs to a p
 Yes. ntfy, Gotify and Apprise are independent; configure any combination and each notification goes to all of them.
 
 **Will login notifications spam me?**
-They would, which is why `LoggedOn` is off by default (Steam reconnects several times a day). If you enable it, the per-`(bot, event)` cooldown still collapses bursts. Most people are fine with just `Disconnected` and `FarmingFinished`.
+No. `LoggedOn` only fires as a recovery notice after an incident that was actually pushed (`Disconnected` or `LoginAttention`), so at most one "back online" per reported outage. Routine reconnects — Steam does several a day — never notify, and short blips don't even produce the `Disconnected` in the first place (two-minute debounce).
 
 **Will this slow down or destabilize my bots?**
 No. Handlers don't block on the network; they enqueue and return, and a background worker does the sending. A dead notification server can't affect farming or logins.
@@ -405,10 +428,13 @@ They're never written to the log. But ASF config is readable through ASF's IPC A
 Yes. Put a global config in `ASF.json` and override per bot in `config/<BotName>.json`. The two are merged, bot wins.
 
 **Can I change the wording of the messages?**
-Yes, with the `Templates` map and the `{Bot}`, `{SteamID}`, `{Reason}` and `{FarmedSomething}` placeholders. The title/emoji is generated automatically.
+Yes, with the `Templates` map and the placeholders listed under [templating](#message-templating) (`{Bot}`, `{Reason}`, `{Game}`, and so on). The title/emoji is generated automatically.
 
 **What's the difference between `FarmingFinished` and `FarmingStopped`?**
-`FarmingFinished` fires when a bot completes its farming cycle (nothing left to farm). `FarmingStopped` fires when farming is interrupted, e.g. the account starts playing a game or you pause it. The latter is noisier, so it's off by default.
+`FarmingFinished` fires when a bot completes a real farming session — cards were farmed and none are left — with a summary of what it farmed. `FarmingStopped` fires when farming is genuinely interrupted, e.g. the account starts playing a game or you pause it. The latter is noisier, so it's off by default.
+
+**Why don't I get "nothing left to farm" pushes anymore?**
+Because they weren't news: ASF checks the badges at every login and every idle recheck, and for an already-farmed account each of those checks used to produce a "finished farming" push claiming a session that never happened. Since 1.4.0 `FarmingFinished` reports only sessions that actually farmed. There's deliberately no replacement event for the idle case.
 
 **What is `LoginAttention` and how is it different from `Disconnected`?**
 `LoginAttention` is a higher-signal `Disconnected`: it only fires when the disconnect reason means the bot actually needs you (wrong password, 2FA, ban, access denied). When enabled it reports those specific disconnects as `LoginAttention` instead of `Disconnected`, so you don't get two pushes. If it's disabled, those cases fall back to a plain `Disconnected`.
@@ -419,8 +445,8 @@ When Steam throttles a bot's logins (`RateLimitExceeded`), ASF retries by itself
 **Does ASFNotify accept or decline trades / friend requests?**
 No, it only watches. The trade and friend-request hooks always return "not handled", so ASF's own behaviour is never changed.
 
-**Why did I get both a `TradeOffer` and a `TradeAccepted` push for the same trade?**
-They come from two different ASF callbacks: `TradeOffer` when an offer arrives, `TradeAccepted`/`TradeRefused` when ASF finishes processing it. That's why the trade events are separate and opt-in; enable only the ones you care about.
+**Can one trade produce two pushes?**
+No. The three trade events split the space cleanly: `TradeOffer` covers only offers ASF leaves pending (needs your review), while `TradeAccepted`/`TradeRefused` cover offers ASF resolved on its own. Any single offer matches exactly one of them.
 
 **Will `BotAdded` spam me every time ASF restarts?**
 No. `BotAdded` suppresses the startup burst (the one-per-bot batch while ASF loads), so it only notifies for genuine additions afterwards. `BotRemoved` only fires when a config is actually deleted or renamed, not on shutdown.

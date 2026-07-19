@@ -3,6 +3,63 @@
 All notable changes to ASFNotify are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); the version numbers match the plugin's assembly version.
 
+## [1.4.0.0] – 2026-07-19
+
+The notification-noise release: every default push should now be either actionable or genuinely news.
+Config-compatible with 1.3.x — no key was renamed or removed — but several events behave differently,
+so read the Changed section.
+
+### Added
+- **`GameFarmingStarted`** (opt-in): an individual game starts being farmed, with its name, remaining
+  cards and queue position. Announced once per game per farming session; resuming the same game after a
+  reconnect stays silent.
+- **`MassFarmingStarted`** (opt-in): the bot starts idling a batch of games in parallel to reach
+  `HoursUntilCardDrops`. One summary push per farming session (game count, queue totals, estimated
+  time), never one per game.
+- **`GameFarmingFinished`** (opt-in): all cards of a game have dropped. Finishes inside the cooldown
+  window are aggregated into a single push instead of being dropped.
+- `FarmingFinished` now carries a session summary: how many games and cards this session actually farmed.
+- New template placeholders: `{Game}`, `{CardsRemaining}`, `{QueueCount}`, `{Count}`, `{Cards}`,
+  `{Hours}`, `{TotalGames}`, `{TotalCards}`, `{TimeRemaining}`.
+
+### Changed
+- **`FarmingFinished` fires only for real farming sessions.** ASF raises its "farming finished" callback
+  with nothing farmed at every login and every idle recheck of an already-farmed account; each of those
+  used to become a "finished farming / nothing left to farm" push per bot — the single biggest source of
+  noise, and factually wrong on the phone. The idle case is now silent, deliberately without a
+  replacement event.
+- **`Disconnected` is debounced.** A disconnect is reported only if the bot is still offline two minutes
+  later, so self-healing blips (the daily Steam disconnect, maintenance flaps) stay silent. Auth
+  failures and the rate-limit path are unaffected.
+- **`LoginAttention` distinguishes hard from transient failures.** Bans/locks/suspensions report
+  immediately; transient reasons (bad password, 2FA mismatch, access denied) need two strikes in a row
+  without a successful login in between, because Steam also returns them during hiccups ASF recovers
+  from on its own.
+- **`LoggedOn` is now a recovery notice.** It fires only after an incident that was actually pushed,
+  closing the loop ("back online") instead of narrating every reconnect. Still opt-in.
+- **`GiftReceived` and `AccountAlert` are deduplicated by pending count.** ASF forgets its notification
+  state on every disconnect, so an unclaimed gift used to be re-announced as "received a gift" at every
+  single login. Now only an increase in the pending count reports; after an ASF restart a still-pending
+  item reminds you exactly once.
+- **`TradeOffer` reports only offers ASF leaves pending** — the ones that actually need review — and is
+  now part of the default set. Auto-resolved offers stay with `TradeAccepted`/`TradeRefused`, so a
+  single trade can no longer produce two pushes.
+- `TradeRefused` counts only rejected and blacklisted offers; ignored (pending) offers belong to
+  `TradeOffer` now.
+- **`FarmingStarted` was split** into `GameFarmingStarted` + `MassFarmingStarted`. A legacy `Events`
+  entry maps to both for now, with a log notice; the mapping will be removed in a future release.
+- `FarmingStopped` reports only genuine interruptions (pause, stop command, account in use); the copies
+  fired around disconnects, internal re-batches and right before `FarmingFinished` are filtered out.
+- Gotify authentication moved from the URL query to the `X-Gotify-Key` header, so the token no longer
+  shows up in ASF's debug-level HTTP traces or proxy logs.
+- Default event set is now: `Disconnected`, `LoginAttention`, `FarmingFinished`, `TradeOffer`,
+  `AccountAlert`, `GiftReceived`, `AsfStarted`, `AsfUpdated`, `PluginUpdated`.
+
+### Fixed
+- The once-a-day marker for the rate-limit report is stamped only when a push was actually enqueued, so
+  the day is no longer consumed while the event is disabled.
+- `{FarmedSomething}` is deprecated (always `True` now); existing templates keep working.
+
 ## [1.3.4.0] – 2026-07-15
 
 ### Fixed
@@ -121,6 +178,8 @@ Never released on its own; the first public release was 1.1.0.0. Listed here for
 - `IGitHubPluginUpdates` for ASF-native plugin updates.
 - Trimmed-runtime-safe config parsing (`JsonElement`) and payload building (`Utf8JsonWriter`).
 
+[1.4.0.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.4.0.0
+[1.3.4.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.4.0
 [1.3.3.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.3.0
 [1.3.2.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.2.0
 [1.3.1.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.1.0

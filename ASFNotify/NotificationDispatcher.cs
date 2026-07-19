@@ -42,7 +42,7 @@ internal sealed class NotificationDispatcher {
 
 	// Non-blocking; safe from any handler.
 	internal void Enqueue(NotificationEvent notification, PluginConfig config) {
-		if (IsOnCooldown(notification, config.EffectiveCooldownMinutes)) {
+		if (!notification.BypassCooldown && IsOnCooldown(notification, config.EffectiveCooldownMinutes)) {
 			return;
 		}
 
@@ -69,7 +69,7 @@ internal sealed class NotificationDispatcher {
 	private async Task DispatchAsync(QueueItem item) {
 		// Re-check the cooldown here: a burst can race several events past the read-only Enqueue check
 		// before the first one delivers and stamps, so collapse them to one delivery per window.
-		if (IsOnCooldown(item.Notification, item.Config.EffectiveCooldownMinutes)) {
+		if (!item.Notification.BypassCooldown && IsOnCooldown(item.Notification, item.Config.EffectiveCooldownMinutes)) {
 			return;
 		}
 
