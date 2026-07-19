@@ -3,6 +3,28 @@
 All notable changes to ASFNotify are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); the version numbers match the plugin's assembly version.
 
+## [1.4.1.0] – 2026-07-19
+
+Tells free promos, real gifts, key redemptions and purchases apart.
+
+### Added
+- **License classification.** A new license is classified by how it entered the account, each class with
+  its own event: **`GiftAccepted`** (default on) — a genuine gift, detected by pairing the arriving
+  complimentary license with a drop of the gift-inbox counter (measured on real accounts, the license
+  data alone cannot tell gifts and free packages apart — everything is "complimentary/single-purchase");
+  **`FreeLicenseAdded`** (opt-in) — free packages, guest passes and hardware promos, chatty for
+  auto-claimer setups; **`GamePurchased`** (opt-in) — a license paid with a real payment method, useful
+  as a security signal on accounts that never buy. `GameRedeemed` keeps covering key redemptions,
+  unchanged.
+
+### Changed
+- **`GiftReceived` wording is honest now.** Steam's gift-inbox counter can't distinguish a real gift
+  from a guest pass, so the push says "item waiting in the gift inbox (gift or guest pass)" instead of
+  claiming a Steam gift was received; the truth about the type arrives with `GiftAccepted` /
+  `FreeLicenseAdded` once the item is accepted.
+- The one-time startup diagnostic now logs the payment-method × license-type matrix per account — the
+  ground truth behind the classification.
+
 ## [1.4.0.0] – 2026-07-19
 
 The notification-noise release: every default push should now be either actionable or genuinely news.
@@ -178,6 +200,7 @@ Never released on its own; the first public release was 1.1.0.0. Listed here for
 - `IGitHubPluginUpdates` for ASF-native plugin updates.
 - Trimmed-runtime-safe config parsing (`JsonElement`) and payload building (`Utf8JsonWriter`).
 
+[1.4.1.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.4.1.0
 [1.4.0.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.4.0.0
 [1.3.4.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.4.0
 [1.3.3.0]: https://github.com/Bladeage/asf-notify/releases/tag/1.3.3.0

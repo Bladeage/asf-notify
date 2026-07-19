@@ -43,6 +43,11 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 	// How many transient auth failures in a row (no successful logon in between) earn a LoginAttention.
 	private const byte TransientAuthStrikeThreshold = 2;
 
+	// The gift-inbox counter update and the license list arrive in no guaranteed order, so complimentary
+	// licenses wait briefly before being attributed, and a counter drop counts for a few minutes.
+	private const int GiftAttributionDelaySeconds = 10;
+	private const int GiftDropWindowMinutes = 5;
+
 	private static readonly ImmutableArray<INotifier> Notifiers = [new NtfyNotifier(), new GotifyNotifier(), new AppriseNotifier()];
 
 	// Disconnect reasons that always mean a human is needed. Account states are never transient, and
@@ -89,6 +94,10 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 	// same unclaimed item isn't re-announced on every reconnect (ASF forgets its own counts there).
 	private readonly ConcurrentDictionary<string, uint> GiftCounts = new(StringComparer.OrdinalIgnoreCase);
 	private readonly ConcurrentDictionary<string, uint> AlertCounts = new(StringComparer.OrdinalIgnoreCase);
+
+	// When a bot's pending-gift count last DROPPED, i.e. an inbox item was accepted; complimentary
+	// licenses arriving around that moment are genuine gifts, all others are free-package claims.
+	private readonly ConcurrentDictionary<string, DateTime> GiftDropAt = new(StringComparer.OrdinalIgnoreCase);
 
 	// Consecutive transient auth failures per bot, reset by a successful logon.
 	private readonly ConcurrentDictionary<string, byte> TransientAuthStrikes = new(StringComparer.OrdinalIgnoreCase);
@@ -168,6 +177,7 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 		RateLimitReportedOn.TryRemove(bot.BotName, out _);
 		GiftCounts.TryRemove(bot.BotName, out _);
 		AlertCounts.TryRemove(bot.BotName, out _);
+		GiftDropAt.TryRemove(bot.BotName, out _);
 		TransientAuthStrikes.TryRemove(bot.BotName, out _);
 		IncidentReported.TryRemove(bot.BotName, out _);
 		AnnouncedPendingTrades.TryRemove(bot.BotName, out _);
@@ -473,7 +483,7 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 		}
 
 		if (newNotifications.Contains(UserNotificationsCallback.EUserNotification.Gifts)) {
-			Report(bot, EEventType.GiftReceived, ENotificationPriority.Normal, $"Bot {bot.BotName} received a Steam gift.");
+			Report(bot, EEventType.GiftReceived, ENotificationPriority.Normal, $"Bot {bot.BotName} has new items waiting in its gift inbox (gifts or guest passes).");
 		}
 
 		if (newNotifications.Contains(UserNotificationsCallback.EUserNotification.AccountAlerts)) {
@@ -517,7 +527,16 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 			return;
 		}
 
-		ReportNotificationDelta(bot, UserNotificationsCallback.EUserNotification.Gifts, counts, GiftCounts, EEventType.GiftReceived, ENotificationPriority.Normal, static (botName, delta) => delta == 1 ? $"Bot {botName} received a Steam gift." : $"Bot {botName} received {delta} Steam gifts.");
+		// A dropping pending-gift count means an inbox item was just accepted - remembered briefly so the
+		// license classifier can tell a gift from a free-package claim. Must happen before the delta
+		// report below updates the baseline.
+		if (counts.TryGetValue(UserNotificationsCallback.EUserNotification.Gifts, out uint giftCount) && (giftCount < GiftCounts.GetValueOrDefault(bot.BotName))) {
+			GiftDropAt[bot.BotName] = DateTime.UtcNow;
+		}
+
+		// The inbox counter can't tell a real gift from a guest pass; the wording stays honest and the
+		// license classification reports the truth once the item is accepted.
+		ReportNotificationDelta(bot, UserNotificationsCallback.EUserNotification.Gifts, counts, GiftCounts, EEventType.GiftReceived, ENotificationPriority.Normal, static (botName, delta) => delta == 1 ? $"Bot {botName} has a new item waiting in its gift inbox (a gift or guest pass)." : $"Bot {botName} has {delta} new items waiting in its gift inbox (gifts or guest passes).");
 		ReportNotificationDelta(bot, UserNotificationsCallback.EUserNotification.AccountAlerts, counts, AlertCounts, EEventType.AccountAlert, ENotificationPriority.High, static (botName, delta) => delta == 1 ? $"Steam raised an account alert for bot {botName}." : $"Steam raised {delta} account alerts for bot {botName}.");
 	}
 
@@ -546,36 +565,36 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 			return;
 		}
 
-		Dictionary<uint, EPaymentMethod> current = new();
+		Dictionary<uint, (EPaymentMethod PaymentMethod, ELicenseType LicenseType)> current = new();
 
 		foreach (SteamApps.LicenseListCallback.License license in callback.LicenseList) {
 			if (license.LicenseFlags.HasFlag(ELicenseFlags.Borrowed)) {
 				continue;
 			}
 
-			current[license.PackageID] = license.PaymentMethod;
+			current[license.PackageID] = (license.PaymentMethod, license.LicenseType);
 		}
 
 		ImmutableHashSet<uint> currentSet = [.. current.Keys];
 
-		// Always maintain the baseline (cheap, no PICS), even when GameRedeemed is disabled, so re-enabling
-		// it later doesn't replay everything acquired meanwhile. Union rather than replace, so a transiently
-		// truncated list can't drop packages and later make them look newly redeemed.
+		// Always maintain the baseline (cheap, no PICS), even when the license events are disabled, so
+		// enabling one later doesn't replay everything acquired meanwhile. Union rather than replace, so
+		// a transiently truncated list can't drop packages and later make them look newly added.
 		bool hadBaseline = KnownPackages.TryGetValue(bot.BotName, out ImmutableHashSet<uint>? known);
 		KnownPackages[bot.BotName] = hadBaseline ? known!.Union(currentSet) : currentSet;
 
 		// The first callback (initial license list at login) is only the baseline.
 		if (!hadBaseline) {
-			// One-time diagnostic (visible at ASF's Debug log level): payment-method breakdown of the account.
-			ASF.ArchiLogger.LogGenericDebug($"[ASFNotify] {bot.BotName}: license payment methods — {string.Join(", ", current.Values.GroupBy(static method => method).Select(static group => $"{group.Key}={group.Count()}"))}");
+			// One-time diagnostic (visible at ASF's Debug log level): the payment-method x license-type
+			// matrix of the account - the ground truth behind ClassifyLicense.
+			ASF.ArchiLogger.LogGenericDebug($"[ASFNotify] {bot.BotName}: license matrix — {string.Join(", ", current.Values.GroupBy(static v => v).OrderByDescending(static g => g.Count()).Select(static g => $"{g.Key.PaymentMethod}/{g.Key.LicenseType}={g.Count()}"))}");
 
 			return;
 		}
 
-		// Only diff and notify when the event is enabled for this bot and a backend is configured.
 		PluginConfig? config = ResolveConfig(bot);
 
-		if (config is not { HasAnyBackend: true } || !config.EffectiveEvents.Contains(EEventType.GameRedeemed)) {
+		if (config is not { HasAnyBackend: true }) {
 			return;
 		}
 
@@ -586,39 +605,119 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 			return;
 		}
 
-		// Diagnostic (Debug level): payment-method breakdown of the newly added packages.
-		ASF.ArchiLogger.LogGenericDebug($"[ASFNotify] {bot.BotName}: {newPackages.Count} new package(s) — {string.Join(", ", newPackages.GroupBy(id => current[id]).Select(group => $"{group.Key}={group.Count()}"))}");
+		// Diagnostic (Debug level): classification input of the newly added packages.
+		ASF.ArchiLogger.LogGenericDebug($"[ASFNotify] {bot.BotName}: {newPackages.Count} new package(s) — {string.Join(", ", newPackages.GroupBy(id => current[id]).Select(group => $"{group.Key.PaymentMethod}/{group.Key.LicenseType}={group.Count()}"))}");
 
-		// Only genuine key redemptions — background redeeming and keys forwarded between bots — which arrive
-		// as ActivationCode. Free-package grants and Steam gifts both arrive as Complimentary and are excluded
-		// here (they're indistinguishable, and real gifts are covered by the separate GiftReceived event).
-		List<uint> redeemed = newPackages.Where(id => current[id] == EPaymentMethod.ActivationCode).ToList();
+		foreach (IGrouping<ELicenseClass, uint> group in newPackages.GroupBy(id => ClassifyLicense(current[id].PaymentMethod))) {
+			// Complimentary resolves to GiftAccepted or FreeLicenseAdded only after the attribution delay,
+			// so it proceeds as long as either of those could fire.
+			bool enabled = group.Key == ELicenseClass.Complimentary
+				? config.EffectiveEvents.Contains(EEventType.GiftAccepted) || config.EffectiveEvents.Contains(EEventType.FreeLicenseAdded)
+				: config.EffectiveEvents.Contains(LicenseClassEvent(group.Key));
 
-		if (redeemed.Count > 0) {
-			_ = ReportRedeemedAsync(bot, redeemed);
+			if (!enabled) {
+				continue;
+			}
+
+			_ = ReportLicensesAsync(bot, group.Key, [.. group]);
 		}
 	}
 
-	private async Task ReportRedeemedAsync(Bot bot, List<uint> packageIDs) {
+	// How a new license entered the account. Complimentary is ambiguous at the license level - real
+	// gifts and claimed free packages look identical there (measured on live accounts: everything is
+	// SinglePurchase, so the license type doesn't help either) - and is resolved late against the
+	// gift-inbox counter: accepting a gift makes that counter drop, claiming a free package doesn't.
+	private enum ELicenseClass : byte {
+		Redeemed,
+		Complimentary,
+		GiftAccepted,
+		FreeLicense,
+		Purchased
+	}
+
+	// Payment methods that don't represent the user's own storefront purchase. Everything OUTSIDE this
+	// set counts as a purchase, so exotic regional payment providers still classify correctly.
+	private static readonly HashSet<EPaymentMethod> NonPurchasePaymentMethods = [
+		EPaymentMethod.None,
+		EPaymentMethod.ActivationCode,
+		EPaymentMethod.Complimentary,
+		EPaymentMethod.GuestPass,
+		EPaymentMethod.HardwarePromo,
+		EPaymentMethod.OEMTicket,
+		EPaymentMethod.AuthorizedDevice,
+		EPaymentMethod.Valve,
+		EPaymentMethod.MasterSubscription
+	];
+
+	private static ELicenseClass ClassifyLicense(EPaymentMethod paymentMethod) {
+		if (paymentMethod == EPaymentMethod.ActivationCode) {
+			return ELicenseClass.Redeemed;
+		}
+
+		if (paymentMethod == EPaymentMethod.Complimentary) {
+			return ELicenseClass.Complimentary;
+		}
+
+		return NonPurchasePaymentMethods.Contains(paymentMethod) ? ELicenseClass.FreeLicense : ELicenseClass.Purchased;
+	}
+
+	private static EEventType LicenseClassEvent(ELicenseClass licenseClass) => licenseClass switch {
+		ELicenseClass.Redeemed => EEventType.GameRedeemed,
+		ELicenseClass.GiftAccepted => EEventType.GiftAccepted,
+		ELicenseClass.Purchased => EEventType.GamePurchased,
+		_ => EEventType.FreeLicenseAdded
+	};
+
+	private async Task ReportLicensesAsync(Bot bot, ELicenseClass licenseClass, List<uint> packageIDs) {
 		try {
+			// Complimentary resolves against the gift-inbox counter. The counter update and the license
+			// list arrive in no guaranteed order, so wait briefly before deciding - a drop shortly before
+			// OR after the license means an inbox item was accepted, i.e. a genuine gift.
+			if (licenseClass == ELicenseClass.Complimentary) {
+				await Task.Delay(TimeSpan.FromSeconds(GiftAttributionDelaySeconds)).ConfigureAwait(false);
+
+				bool giftAccepted = GiftDropAt.TryGetValue(bot.BotName, out DateTime dropAt) && (DateTime.UtcNow - dropAt <= TimeSpan.FromMinutes(GiftDropWindowMinutes));
+
+				if (giftAccepted) {
+					// Consume the marker so free packages claimed minutes later aren't also labelled gifts.
+					GiftDropAt.TryRemove(bot.BotName, out _);
+				}
+
+				licenseClass = giftAccepted ? ELicenseClass.GiftAccepted : ELicenseClass.FreeLicense;
+			}
+
+			EEventType eventType = LicenseClassEvent(licenseClass);
+			ENotificationPriority priority = licenseClass == ELicenseClass.FreeLicense ? ENotificationPriority.Low : ENotificationPriority.Normal;
+
 			// A very large batch is aggregated without per-title PICS lookups (avoids a big lookup burst
 			// and an unwieldy message) while still telling the user something happened.
 			if (packageIDs.Count > MaxRedeemBatch) {
-				Report(bot, EEventType.GameRedeemed, ENotificationPriority.Normal, $"Bot {bot.BotName} redeemed {packageIDs.Count} new licenses.");
+				Report(bot, eventType, priority, BuildLicenseMessage(bot, licenseClass, packageIDs, null));
 
 				return;
 			}
 
 			IReadOnlyList<string> names = await GameNameResolver.ResolveAsync(bot, packageIDs).ConfigureAwait(false);
 
-			string what = names.Count > 0
-				? string.Join(", ", names)
-				: packageIDs.Count == 1 ? $"a new license (package {packageIDs[0]})" : $"{packageIDs.Count} new licenses ({string.Join(", ", packageIDs)})";
-
-			Report(bot, EEventType.GameRedeemed, ENotificationPriority.Normal, $"Bot {bot.BotName} redeemed {what}.");
+			Report(bot, eventType, priority, BuildLicenseMessage(bot, licenseClass, packageIDs, names.Count > 0 ? string.Join(", ", names) : null));
 		} catch (Exception e) {
 			ASF.ArchiLogger.LogGenericWarningException(e);
 		}
+	}
+
+	private static string BuildLicenseMessage(Bot bot, ELicenseClass licenseClass, List<uint> packageIDs, string? names) {
+		int count = packageIDs.Count;
+
+		string what = names ?? (count == 1
+			? $"a new license (package {packageIDs[0]})"
+			: count > MaxRedeemBatch ? $"{count} new licenses" : $"{count} new licenses ({string.Join(", ", packageIDs)})");
+
+		return licenseClass switch {
+			ELicenseClass.Redeemed => $"Bot {bot.BotName} redeemed {what}.",
+			ELicenseClass.GiftAccepted => $"Bot {bot.BotName} accepted {(count == 1 ? "a gift" : $"{count} gifts")}: {what}.",
+			ELicenseClass.Purchased => $"Bot {bot.BotName} purchased {what}.",
+			_ => $"Bot {bot.BotName} claimed {(count == 1 ? "a free license" : $"{count} free licenses")}: {what}."
+		};
 	}
 
 	public Task OnUpdateProceeding(Version currentVersion, Version newVersion) => Task.CompletedTask;
@@ -801,7 +900,10 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 		EEventType.TradeOffer => $"🤝 {botName} trade offer needs review",
 		EEventType.TradeAccepted => $"✅ {botName} trade accepted",
 		EEventType.TradeRefused => $"🚫 {botName} trade refused",
-		EEventType.GiftReceived => $"🎁 {botName} gift received",
+		EEventType.GiftReceived => $"🎁 {botName} gift inbox",
+		EEventType.GiftAccepted => $"🎁 {botName} gift accepted",
+		EEventType.FreeLicenseAdded => $"🆓 {botName} free license",
+		EEventType.GamePurchased => $"🛒 {botName} purchase",
 		EEventType.AccountAlert => $"🔔 {botName} account alert",
 		EEventType.GameRedeemed => $"🎮 {botName} new game",
 		EEventType.BotAdded => $"➕ {botName} added",

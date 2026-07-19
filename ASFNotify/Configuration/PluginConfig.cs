@@ -19,6 +19,7 @@ internal sealed record PluginConfig {
 		EEventType.FarmingFinished,
 		EEventType.TradeOffer,
 		EEventType.GiftReceived,
+		EEventType.GiftAccepted,
 		EEventType.AccountAlert,
 		EEventType.AsfStarted,
 		EEventType.AsfUpdated,

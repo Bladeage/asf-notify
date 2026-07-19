@@ -86,8 +86,11 @@ Each event is toggled through the `Events` config list. The default set is the l
 | Event | Default | Prio | Fires when |
 |-------|:-------:|:----:|-------------|
 | `AccountAlert` | on | High | Steam raised a *new* account alert (security/account status) for a bot. Deduplicated by pending count, so an unread alert isn't re-announced at every login. Only the fact that an alert exists is available, not its content. |
-| `GiftReceived` | on | Normal | A bot received a *new* Steam gift. Deduplicated by pending count: an unclaimed gift no longer re-announces at every login (once per ASF restart at most, as a reminder). |
-| `GameRedeemed` | off | Normal | A bot redeemed a key (including keys forwarded internally between bots). Free-package grants and Steam gifts both arrive as "complimentary" licenses and are excluded here; genuine gifts are covered by `GiftReceived`. The game name is resolved when possible, otherwise the package ID is shown. |
+| `GiftReceived` | on | Normal | A *new* item is waiting in the bot's gift inbox — a real gift or a guest pass; Steam's counter can't tell which, so the message says so. Deduplicated by pending count: an unclaimed item no longer re-announces at every login (once per ASF restart at most, as a reminder). The type becomes known on acceptance — see the three events below. |
+| `GiftAccepted` | on | Normal | The bot accepted a genuine gift. Detected by pairing the arriving complimentary license with a drop of the gift-inbox counter — a free-package claim never touches that inbox. Includes the game name. |
+| `FreeLicenseAdded` | off | Low | The bot claimed a free promo license: free packages, guest passes, hardware promos. Chatty if you run automatic free-package claiming, hence opt-in. |
+| `GamePurchased` | off | Normal | A license paid with a real payment method (PayPal, credit card, wallet, …) was added. Useful as a security signal: a purchase on an account that never buys is worth a look. |
+| `GameRedeemed` | off | Normal | A bot redeemed a key (including keys forwarded internally between bots). The game name is resolved when possible, otherwise the package ID is shown. |
 
 **Bot lifecycle**
 
@@ -106,12 +109,12 @@ Each event is toggled through the `Events` config list. The default set is the l
 
 The two update events are sent synchronously right before ASF restarts, so they go out before the process exits.
 
-So the default set is: `Disconnected`, `LoginAttention`, `FarmingFinished`, `TradeOffer`, `AccountAlert`, `GiftReceived`, `AsfStarted`, `AsfUpdated`, `PluginUpdated`. Override it with your own `Events` list (see [Configuration](#configuration)).
+So the default set is: `Disconnected`, `LoginAttention`, `FarmingFinished`, `TradeOffer`, `AccountAlert`, `GiftReceived`, `GiftAccepted`, `AsfStarted`, `AsfUpdated`, `PluginUpdated`. Override it with your own `Events` list (see [Configuration](#configuration)).
 
 The rule behind the defaults: actionable alerts and rare lifecycle events are on; per-game and status chatter is opt-in. If you *want* the full farming narration, add the three farming events:
 
 ```jsonc
-"Events": ["Disconnected", "LoginAttention", "FarmingFinished", "TradeOffer", "AccountAlert", "GiftReceived", "AsfStarted", "AsfUpdated", "PluginUpdated", "GameFarmingStarted", "GameFarmingFinished", "MassFarmingStarted"]
+"Events": ["Disconnected", "LoginAttention", "FarmingFinished", "TradeOffer", "AccountAlert", "GiftReceived", "GiftAccepted", "AsfStarted", "AsfUpdated", "PluginUpdated", "GameFarmingStarted", "GameFarmingFinished", "MassFarmingStarted"]
 ```
 
 > **Upgrading from 1.3.x?** `FarmingStarted` was split into `GameFarmingStarted` + `MassFarmingStarted`; an old `Events` list containing `FarmingStarted` maps to both for now (with a log notice). `FarmingFinished` no longer fires for "nothing to farm" — that was noise, and there is deliberately no replacement. `TradeOffer` (now pending-offers-only) is the one event newly on by default.
@@ -206,7 +209,7 @@ ASFNotify reads a single object under the top-level `ASFNotify` key. Put it in `
 | `Gotify.Token` | string | — | Gotify application token. Active when both `Url` and `Token` are set. Never logged. |
 | `Apprise.Url` | string (URL) | — | apprise-api notify endpoint, e.g. `http://host:8000/notify/<key>`. Active when set. |
 | `Apprise.Tags` | string | — | Optional comma-separated Apprise tag filter. |
-| `Events` | string[] | *(see [Reported events](#reported-events))* | Which events to report. Valid names: `Disconnected`, `LoginAttention`, `LoggedOn`, `GameFarmingStarted`, `GameFarmingFinished`, `MassFarmingStarted`, `FarmingFinished`, `FarmingStopped`, `TradeOffer`, `TradeAccepted`, `TradeRefused`, `AccountAlert`, `GiftReceived`, `GameRedeemed`, `BotAdded`, `BotRemoved`, `AsfStarted`, `AsfUpdated`, `PluginUpdated`. Case-insensitive; unknown names are ignored (the legacy `FarmingStarted` maps to the two new farming-start events for now). |
+| `Events` | string[] | *(see [Reported events](#reported-events))* | Which events to report. Valid names: `Disconnected`, `LoginAttention`, `LoggedOn`, `GameFarmingStarted`, `GameFarmingFinished`, `MassFarmingStarted`, `FarmingFinished`, `FarmingStopped`, `TradeOffer`, `TradeAccepted`, `TradeRefused`, `AccountAlert`, `GiftReceived`, `GiftAccepted`, `FreeLicenseAdded`, `GamePurchased`, `GameRedeemed`, `BotAdded`, `BotRemoved`, `AsfStarted`, `AsfUpdated`, `PluginUpdated`. Case-insensitive; unknown names are ignored (the legacy `FarmingStarted` maps to the two new farming-start events for now). |
 | `CooldownMinutes` | number (0–255) | `5` | Minimum minutes between two notifications for the same bot and event. `0` disables it. |
 | `Templates` | object | — | Per-event message overrides, keyed by event name. See [templating](#message-templating). |
 
@@ -277,6 +280,9 @@ Each event also gets a fitting ntfy tag (emoji) and Apprise type:
 | `TradeAccepted` | Normal | `white_check_mark` | `success` |
 | `TradeRefused` | Low | `no_entry` | `warning` |
 | `GiftReceived` | Normal | `gift` | `success` |
+| `GiftAccepted` | Normal | `gift` | `success` |
+| `FreeLicenseAdded` | Low | `free` | `info` |
+| `GamePurchased` | Normal | `shopping_cart` | `info` |
 | `GameRedeemed` | Normal | `video_game` | `success` |
 | `BotAdded` | Low | `heavy_plus_sign` | `success` |
 | `BotRemoved` | Low | `heavy_minus_sign` | `warning` |
@@ -392,7 +398,7 @@ The `DebugFast` config skips analyzers for fast iteration; `Release` runs the fu
 ## Known limitations
 
 - Steam Guard / 2FA prompts aren't reported directly. ASF has no plugin callback for an "input needed" state. `LoginAttention` is the closest proxy: it classifies auth-related disconnect reasons (bad password, 2FA, ban) and flags them high-priority. It can't catch a prompt that isn't preceded by such a disconnect.
-- Steam user-notification events carry no detail. `GiftReceived` and `AccountAlert` come from Steam's notification feed, which only signals that a notification of that type appeared, not what it is.
+- Steam user-notification events carry no detail. `GiftReceived` and `AccountAlert` come from Steam's notification feed, which only signals how many notifications of that type are pending, not what they are — in particular, the gift inbox counts real gifts and guest passes together. The license classification (`GiftAccepted` / `FreeLicenseAdded` / `GamePurchased` / `GameRedeemed`) tells them apart, but only once an item is accepted into the library.
 - The per-game farming events observe ASF's live farming collections through their change event; getting at it requires assuming ASF's concrete collection types (an implementation detail, not a plugin contract). The access is guarded and falls back to 60-second polling if an ASF update ever changes those types — worst case the per-game pushes arrive up to a minute late.
 - Deduplication state (pending gift/alert counts, per-session announced games, incident flags) is in-memory. After an ASF restart a still-unclaimed gift or unread alert is re-announced once — a reminder by design — and the farming session state starts fresh.
 - `GameRedeemed` name resolution is best-effort. The Steam license list only carries package IDs; the game name is looked up via PICS and may occasionally fall back to the package ID (e.g. if PICS doesn't respond). Free-package grants and gifts (both "complimentary" licenses) are excluded by payment method, so it targets actual key redemptions; genuine gifts are reported by `GiftReceived`.
@@ -432,6 +438,9 @@ Yes, with the `Templates` map and the placeholders listed under [templating](#me
 
 **What's the difference between `FarmingFinished` and `FarmingStopped`?**
 `FarmingFinished` fires when a bot completes a real farming session — cards were farmed and none are left — with a summary of what it farmed. `FarmingStopped` fires when farming is genuinely interrupted, e.g. the account starts playing a game or you pause it. The latter is noisier, so it's off by default.
+
+**How does ASFNotify tell a real gift from a free promo?**
+By how the license enters the account: a key → `GameRedeemed`; a real payment method → `GamePurchased`; guest passes and hardware promos → `FreeLicenseAdded`. Gifts and free packages both arrive as "complimentary" licenses, which Steam's license data genuinely cannot tell apart — so the plugin pairs the license with the gift-inbox counter: if the pending-gift count dropped around the same moment, an inbox item was accepted and it's a `GiftAccepted`; otherwise it's a claimed free package (`FreeLicenseAdded`). The *pending* inbox itself doesn't reveal the type either, so `GiftReceived` honestly says "gift or guest pass" until the item is accepted.
 
 **Why don't I get "nothing left to farm" pushes anymore?**
 Because they weren't news: ASF checks the badges at every login and every idle recheck, and for an already-farmed account each of those checks used to produce a "finished farming" push claiming a session that never happened. Since 1.4.0 `FarmingFinished` reports only sessions that actually farmed. There's deliberately no replacement event for the idle case.
