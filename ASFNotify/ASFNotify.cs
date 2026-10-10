@@ -95,6 +95,12 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 	private readonly ConcurrentDictionary<string, uint> GiftCounts = new(StringComparer.OrdinalIgnoreCase);
 	private readonly ConcurrentDictionary<string, uint> AlertCounts = new(StringComparer.OrdinalIgnoreCase);
 
+	// NOTE: the official ASF container is published self-contained with PublishTrimmed, so the embedded
+	// BCL only keeps members ASF itself references. ASF never calls ConcurrentDictionary.AddOrUpdate,
+	// GetOrAdd or TryUpdate, which means those overloads are trimmed away and any plugin calling them
+	// dies at runtime with MissingMethodException. Stick to TryGetValue / TryAdd / TryRemove and the
+	// indexer below - all of them are provably used by ASF and therefore survive the trimmer.
+
 	// When a bot's pending-gift count last DROPPED, i.e. an inbox item was accepted; complimentary
 	// licenses arriving around that moment are genuine gifts, all others are free-package claims.
 	private readonly ConcurrentDictionary<string, DateTime> GiftDropAt = new(StringComparer.OrdinalIgnoreCase);
@@ -248,7 +254,11 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 		}
 
 		if (TransientAuthFailureResults.Contains(reason)) {
-			byte strikes = TransientAuthStrikes.AddOrUpdate(bot.BotName, 1, static (_, current) => (byte) Math.Min(byte.MaxValue, current + 1));
+			// Read-then-write instead of AddOrUpdate: see the trimming note on the fields above.
+			// Auth callbacks for one bot arrive serially, so the gap between read and write is harmless.
+			byte strikes = TransientAuthStrikes.TryGetValue(bot.BotName, out byte previous) ? (byte) Math.Min(byte.MaxValue, previous + 1) : (byte) 1;
+
+			TransientAuthStrikes[bot.BotName] = strikes;
 
 			// Exactly at the threshold: one push per incident, not one per retry. The first strike still
 			// arms the offline debounce, so a bot that ASF stops after a single failure (e.g. an expired
@@ -323,19 +333,13 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 		// No push of its own: the tracker announces what is actually being farmed, per game or batch.
 		// A tracker left over from a destroyed bot of the same name watches dead collections, so it is
 		// replaced rather than reused.
-		FarmingTracker tracker = FarmingTrackers.AddOrUpdate(
-			bot.BotName,
-			_ => new FarmingTracker(bot, this),
-			(_, existing) => {
-				if (existing.IsFor(bot)) {
-					return existing;
-				}
+		// Read-then-write instead of AddOrUpdate: see the trimming note on the fields above.
+		if (!FarmingTrackers.TryGetValue(bot.BotName, out FarmingTracker? tracker) || !tracker.IsFor(bot)) {
+			tracker?.Dispose();
 
-				existing.Dispose();
-
-				return new FarmingTracker(bot, this);
-			}
-		);
+			tracker = new FarmingTracker(bot, this);
+			FarmingTrackers[bot.BotName] = tracker;
+		}
 
 		tracker.OnFarmingStarted();
 
@@ -437,7 +441,15 @@ internal sealed class ASFNotify : IASF, IBot, IBotConnection, IBotCardsFarmerInf
 		// Offers ASF resolves on its own are covered by TradeAccepted/TradeRefused; the only offer that
 		// needs a human is one ASF leaves pending (Ignored), and each one is announced exactly once.
 		if (asfResult == ParseTradeResult.EResult.Ignored) {
-			ConcurrentDictionary<ulong, bool> announced = AnnouncedPendingTrades.GetOrAdd(bot.BotName, static _ => new ConcurrentDictionary<ulong, bool>());
+			// TryAdd instead of GetOrAdd: see the trimming note on the fields above. If a parallel call
+			// won the race, take whatever is in the map so both callers share one announced-offer set.
+			if (!AnnouncedPendingTrades.TryGetValue(bot.BotName, out ConcurrentDictionary<ulong, bool>? announced)) {
+				announced = new ConcurrentDictionary<ulong, bool>();
+
+				if (!AnnouncedPendingTrades.TryAdd(bot.BotName, announced) && AnnouncedPendingTrades.TryGetValue(bot.BotName, out ConcurrentDictionary<ulong, bool>? existing)) {
+					announced = existing;
+				}
+			}
 
 			if (announced.TryAdd(tradeOffer.TradeOfferID, true)) {
 				int give = tradeOffer.ItemsToGiveReadOnly.Count;
